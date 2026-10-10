@@ -1,0 +1,130 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Helper functions ─────────────────────────────────────────────────────
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserData().role == 'admin';
+    }
+
+    function isAdminOrCoAdmin() {
+      return isAuthenticated() && getUserData().role in ['admin', 'coAdmin'];
+    }
+
+    function isActiveUser() {
+      return isAuthenticated() && getUserData().status == 'active';
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ── Users ────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      // Anyone authenticated can read user profiles (needed for workers list)
+      allow read: if isAuthenticated();
+      // Users can only be created during registration (auth uid must match doc id)
+      allow create: if isOwner(userId);
+      // Users can update their own non-role/status fields; admins can update anything
+      allow update: if isAdmin()
+        || (isOwner(userId)
+            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status']));
+      // Admins can delete anyone; users can delete their own account
+      allow delete: if isAdmin() || isOwner(userId);
+    }
+
+    // ── Boilerhouses ─────────────────────────────────────────────────────────
+    match /boilerhouses/{docId} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdminOrCoAdmin();
+    }
+
+    // ── Equipment ────────────────────────────────────────────────────────────
+    match /equipment/{docId} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdminOrCoAdmin();
+    }
+
+    // ── Journal ──────────────────────────────────────────────────────────────
+    match /journal/{docId} {
+      allow read: if isActiveUser();
+      // Active users can create entries (authorId must match)
+      allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
+      // Author or admin can update/delete
+      allow update: if isActiveUser()
+        && (resource.data.authorId == request.auth.uid || isAdminOrCoAdmin());
+      allow delete: if isAdminOrCoAdmin() || resource.data.authorId == request.auth.uid;
+    }
+
+    // ── Instructions ─────────────────────────────────────────────────────────
+    match /instructions/{docId} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdminOrCoAdmin();
+    }
+
+    // ── Drawings ─────────────────────────────────────────────────────────────
+    match /drawings/{docId} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdminOrCoAdmin();
+    }
+
+    // ── Notifications ────────────────────────────────────────────────────────
+    match /notifications/{docId} {
+      // Users can read notifications targeted to them or broadcast (empty recipientIds)
+      allow read: if isAuthenticated();
+      // Admins/co-admins can create any notification. System notifications
+      // may also come from pending users (registration notice) and from the
+      // unauthenticated forgot-password screen (reset request). Active users
+      // create informational ones (e.g. "new journal entry").
+      allow create: if isAdminOrCoAdmin()
+        || request.resource.data.type == 'system'
+        || (isActiveUser() && request.resource.data.type == 'informational');
+      // Users can mark their own notifications as read
+      allow update: if isAuthenticated()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isAdmin();
+    }
+
+    // ── ChangeLogs ───────────────────────────────────────────────────────────
+    match /changeLogs/{docId} {
+      allow read: if isActiveUser();
+      allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
+      allow delete: if isAdminOrCoAdmin() || resource.data.authorId == request.auth.uid;
+
+      match /reactions/{reactionId} {
+        allow read: if isActiveUser();
+        allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
+        allow delete: if isAdminOrCoAdmin() || resource.data.authorId == request.auth.uid;
+      }
+    }
+
+    // ── Shifts (operator duty schedule) ──────────────────────────────────────
+    match /shifts/{docId} {
+      allow read: if isActiveUser();
+      allow create, update, delete: if isAdminOrCoAdmin();
+    }
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+    match /audit_log/{docId} {
+      allow read, create: if isAdminOrCoAdmin();
+    }
+
+    // ── Password resets (admin-initiated) ────────────────────────────────────
+    match /passwordResets/{docId} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Deny everything else ─────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

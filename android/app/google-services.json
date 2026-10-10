@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1043429058035",
+    "project_id": "android-app-63a1c",
+    "storage_bucket": "android-app-63a1c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1043429058035:android:34d49f379b4b223cde1e86",
+        "android_client_info": {
+          "package_name": "com.khorazm.issiklik.khorazm_issiklik_manbai_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCDN0bAsklneKrZcJ21QJ-fVWZ_DkdAl4c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
