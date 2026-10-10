@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible problem with Issiqlik Ta'minoti
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include passwords, Firebase tokens, personal information, or private boiler-house data in an issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the steps that reproduce the problem.
+      placeholder: |
+        1. Open ...
+        2. Tap ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: "e.g. Pixel 7, Android 15"
+  - type: dropdown
+    id: language
+    attributes:
+      label: App language
+      options:
+        - Uzbek Cyrillic
+        - Uzbek Latin
+        - Other
