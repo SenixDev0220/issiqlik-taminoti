@@ -11,11 +11,23 @@ service cloud.firestore {
   function filled(v,n) { return text(v,n) && v.size() > 0; }
   function num(v) { return v is number && v >= 0 && v <= 1000000000000; }
   function house(id) { return filled(id,128) && exists(/databases/$(database)/documents/boilerhouses/$(id)); }
-  function idAt(a,i) { return a.size() <= i || (a[i] is string && a[i].matches('^[A-Za-z0-9_-]{1,128}$')); }
   function ids(a) { return a is list && a.size() <= 30 && a.toSet().size() == a.size()
-    && idAt(a,0) && idAt(a,1) && idAt(a,2) && idAt(a,3) && idAt(a,4) && idAt(a,5) && idAt(a,6) && idAt(a,7) && idAt(a,8) && idAt(a,9)
-    && idAt(a,10) && idAt(a,11) && idAt(a,12) && idAt(a,13) && idAt(a,14) && idAt(a,15) && idAt(a,16) && idAt(a,17) && idAt(a,18) && idAt(a,19)
-    && idAt(a,20) && idAt(a,21) && idAt(a,22) && idAt(a,23) && idAt(a,24) && idAt(a,25) && idAt(a,26) && idAt(a,27) && idAt(a,28) && idAt(a,29); }
+    && (a.size() < 1 || a[0] is string) && (a.size() < 2 || a[1] is string)
+    && (a.size() < 3 || a[2] is string) && (a.size() < 4 || a[3] is string)
+    && (a.size() < 5 || a[4] is string) && (a.size() < 6 || a[5] is string)
+    && (a.size() < 7 || a[6] is string) && (a.size() < 8 || a[7] is string)
+    && (a.size() < 9 || a[8] is string) && (a.size() < 10 || a[9] is string)
+    && (a.size() < 11 || a[10] is string) && (a.size() < 12 || a[11] is string)
+    && (a.size() < 13 || a[12] is string) && (a.size() < 14 || a[13] is string)
+    && (a.size() < 15 || a[14] is string) && (a.size() < 16 || a[15] is string)
+    && (a.size() < 17 || a[16] is string) && (a.size() < 18 || a[17] is string)
+    && (a.size() < 19 || a[18] is string) && (a.size() < 20 || a[19] is string)
+    && (a.size() < 21 || a[20] is string) && (a.size() < 22 || a[21] is string)
+    && (a.size() < 23 || a[22] is string) && (a.size() < 24 || a[23] is string)
+    && (a.size() < 25 || a[24] is string) && (a.size() < 26 || a[25] is string)
+    && (a.size() < 27 || a[26] is string) && (a.size() < 28 || a[27] is string)
+    && (a.size() < 29 || a[28] is string) && (a.size() < 30 || a[29] is string)
+    && (a.size() == 0 || a.join('|').matches('^[A-Za-z0-9_-]{1,128}([|][A-Za-z0-9_-]{1,128})*$')); }
   function authority(d) { return {'role':d.role,'status':d.status,'boilerhouseIds':d.boilerhouseIds,'sessionValidAfter':d.sessionValidAfter}; }
   function profile(d) { return {'id':d.id,'firstName':d.firstName,'lastName':d.lastName,'position':d.position,'photoUrl':d.photoUrl,'role':d.role,'status':d.status}; }
   function userValid(d,uid) { return d.keys().hasAll(['id','login','firstName','lastName','phone','position','photoUrl','role','status','boilerhouseIds','sessionValidAfter','createdAt'])
@@ -42,6 +54,11 @@ service cloud.firestore {
       || (admin() && !own(uid) && b.role != 'admin' && a.role != 'admin'
         && (a.sessionValidAfter == b.sessionValidAfter || a.sessionValidAfter == request.time)
         && (!(a.status == 'blocked' && b.status != 'blocked') || a.sessionValidAfter == request.time))); }
+  function companionUpdate(uid) {
+    let before = get(/databases/$(database)/documents/users/$(uid)).data;
+    let after = getAfter(/databases/$(database)/documents/users/$(uid)).data;
+    return request.auth != null && before != after && mirrors(uid,after);
+  }
   match /users/{uid} {
     allow get: if own(uid);
     allow create: if registration(uid,request.resource.data);
@@ -52,17 +69,17 @@ service cloud.firestore {
     allow list: if manager();
     allow create: if registration(uid,getAfter(/databases/$(database)/documents/users/$(uid)).data);
     allow update: if admin() && !own(uid) && resource.data.role != 'admin' && request.resource.data.role != 'admin'
-      && editUser(uid,get(/databases/$(database)/documents/employeeDirectory/$(uid)).data,getAfter(/databases/$(database)/documents/users/$(uid)).data);
+      && companionUpdate(uid);
   }
   match /employeeDirectory/{uid} {
     allow read: if manager();
     allow create: if registration(uid,request.resource.data);
-    allow update: if editUser(uid,resource.data,request.resource.data);
+    allow update: if companionUpdate(uid);
   }
   match /userProfiles/{uid} {
     allow read: if active() && resource.data.status == 'active';
     allow create: if registration(uid,getAfter(/databases/$(database)/documents/users/$(uid)).data);
-    allow update: if editUser(uid,get(/databases/$(database)/documents/employeeDirectory/$(uid)).data,getAfter(/databases/$(database)/documents/users/$(uid)).data);
+    allow update: if companionUpdate(uid);
   }
   match /phoneClaims/{phone} {
     allow create: if request.auth != null && request.resource.data.keys().hasAll(['uid','createdAt']) && request.resource.data.keys().hasOnly(['uid','createdAt'])

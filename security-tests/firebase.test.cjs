@@ -53,6 +53,10 @@ test('negative: legacy profile cannot recreate or claim missing authority',async
  await env.withSecurityRulesDisabled(async c=>{await setDoc(doc(c.firestore(),'users','legacy'),user('legacy',{role:'admin'}));});
  await assertFails(registration(db('legacy'),'legacy'));
 });
+test('negative: non-string assignments denied',async()=>{
+ for (const value of [1, true, null, {id:'h1'}]) await assertFails(management(db('admin'),'member',{boilerhouseIds:[value]}));
+ await assert.rejects(management(db('admin'),'member',{boilerhouseIds:[['h1']]}),{code:'invalid-argument'});
+});
 test('positive: all 30 unique assignment IDs fit the rule evaluation budget',async()=>{
  await assertSucceeds(management(db('admin'),'member',{boilerhouseIds:Array.from({length:30},(_,i)=>'house'+i)}));
 });

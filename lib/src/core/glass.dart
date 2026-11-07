@@ -1,4 +1,7 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -344,9 +347,29 @@ class GlassSearchField extends StatelessWidget {
 /// Top-level tabs shown in the floating bottom bar.
 enum AppTab { home, boilerhouses, journal, profile }
 
-AppTab? _pendingNavTransitionFrom;
+// Scoped to a router, consumed only by the requested destination, and expired
+// after its first frame. Redirects and unrelated navbars cannot inherit a lens.
+final _navTransitions = Expando<_NavTransition>();
 
-/// Floating translucent navigation with a glass-inspired active-tab indicator.
+class _NavTransition {
+  const _NavTransition({
+    required this.fromRoute,
+    required this.toRoute,
+    required this.position,
+    required this.velocity,
+    required this.pressure,
+    required this.pressureVelocity,
+  });
+
+  final String fromRoute;
+  final String toRoute;
+  final double position;
+  final double velocity;
+  final double pressure;
+  final double pressureVelocity;
+}
+
+/// Floating glass navigation with a spring-driven, deformable liquid lens.
 class GlassBottomNav extends ConsumerStatefulWidget {
   const GlassBottomNav({super.key, required this.current, this.onFab});
 
@@ -360,70 +383,174 @@ class GlassBottomNav extends ConsumerStatefulWidget {
 }
 
 class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _indicatorController;
-  late final CurvedAnimation _indicatorAnimation;
-  late int _fromIndex;
-  late int _toIndex;
+    with TickerProviderStateMixin {
+  static const _spring = SpringDescription(
+    mass: 1,
+    stiffness: 330,
+    damping: 30,
+  );
+  static const _pressSpring = SpringDescription(
+    mass: 1,
+    stiffness: 420,
+    damping: 24,
+  );
+  static final _blur = ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10);
+  late final AnimationController _position;
+  late final AnimationController _pressure;
+  late double _target;
+  bool _initialized = false;
+  bool _motionDisabled = false;
+
+  static double _slot(AppTab tab) =>
+      (tab.index < 2 ? tab.index : tab.index + 1).toDouble();
+
+  static String _route(AppTab tab) => switch (tab) {
+    AppTab.home => '/home',
+    AppTab.boilerhouses => '/boilerhouses',
+    AppTab.journal => '/journal',
+    AppTab.profile => '/profile',
+  };
 
   @override
   void initState() {
     super.initState();
-    _toIndex = _tabIndex(widget.current);
-    _fromIndex = _tabIndex(_pendingNavTransitionFrom ?? widget.current);
-    _pendingNavTransitionFrom = null;
-    _indicatorController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 520),
-    );
-    _indicatorAnimation = CurvedAnimation(
-      parent: _indicatorController,
-      curve: Curves.elasticOut,
-    );
-    if (_fromIndex == _toIndex) {
-      _indicatorController.value = 1;
-    } else {
-      _indicatorController.forward();
-    }
+    _target = _slot(widget.current);
+    // A direct route mount must start at its own tab, not the first tab.
+    _position = AnimationController.unbounded(vsync: this, value: _target);
+    _pressure = AnimationController.unbounded(vsync: this);
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_reduceMotion(context)) _indicatorController.value = 1;
+    _motionDisabled = _reduceMotion(context);
+    if (!_initialized) {
+      _initialized = true;
+      final router = GoRouter.maybeOf(context);
+      final transition = router == null ? null : _navTransitions[router];
+      if (transition != null &&
+          transition.toRoute == _route(widget.current) &&
+          router!.routeInformationProvider.value.uri.path == transition.toRoute) {
+        _navTransitions[router] = null;
+        if (!_motionDisabled) {
+          _position.value = transition.position;
+          _pressure.value = transition.pressure;
+          _moveTo(_target, velocity: transition.velocity);
+          _release(velocity: transition.pressureVelocity);
+        }
+      }
+    }
+    if (_motionDisabled) {
+      _position.value = _target;
+      _pressure.value = 0;
+    }
   }
 
   @override
   void didUpdateWidget(covariant GlassBottomNav oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final nextIndex = _tabIndex(widget.current);
-    if (nextIndex == _toIndex) return;
-    _fromIndex = _toIndex;
-    _toIndex = nextIndex;
-    if (_reduceMotion(context)) {
-      _indicatorController.value = 1;
-    } else {
-      _indicatorController.forward(from: 0);
+    if (oldWidget.current != widget.current) {
+      final router = GoRouter.maybeOf(context);
+      if (router != null &&
+          _navTransitions[router]?.toRoute == _route(widget.current)) {
+        _navTransitions[router] = null;
+      }
+      _moveTo(_slot(widget.current));
+      _release();
     }
+  }
+
+  void _moveTo(double target, {double? velocity}) {
+    _target = target;
+    if (_motionDisabled) {
+      _position.value = target;
+      return;
+    }
+    final speed = velocity ?? _position.velocity;
+    if ((_position.value - target).abs() < .001 && speed.abs() < .01) {
+      _position.value = target;
+      return;
+    }
+    // Retarget from the actual presentation position AND velocity. Repeated
+    // taps never restart a tween at the previous destination.
+    _position.animateWith(SpringSimulation(
+      _spring,
+      _position.value,
+      target,
+      speed,
+    ));
+  }
+
+  void _press(AppTab tab) {
+    if (_motionDisabled) return;
+    _moveTo(_slot(tab));
+    _pressure.animateTo(
+      1,
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _release({double? velocity}) {
+    if (_motionDisabled) {
+      _pressure.value = 0;
+      return;
+    }
+    final speed = velocity ?? _pressure.velocity;
+    if (_pressure.value.abs() < .001 && speed.abs() < .01) {
+      _pressure.value = 0;
+      return;
+    }
+    _pressure.animateWith(SpringSimulation(
+      _pressSpring,
+      _pressure.value,
+      0,
+      speed,
+    ));
+  }
+
+  void _cancelPress() {
+    _moveTo(_slot(widget.current));
+    _release();
+  }
+
+  void _navigate(AppTab tab) {
+    final router = GoRouter.of(context);
+    final route = _route(tab);
+    final currentRoute = router.routeInformationProvider.value.uri.path;
+    final pending = _navTransitions[router];
+    // Ignore stale outgoing pages, but allow the latest tap to replace a
+    // request made by this page before the destination has mounted.
+    if (currentRoute != _route(widget.current) &&
+        !(pending?.fromRoute == _route(widget.current) &&
+            pending?.toRoute == currentRoute)) {
+      return;
+    }
+    _release();
+    _moveTo(_slot(tab));
+    if (currentRoute == route) return;
+    final transition = _NavTransition(
+      fromRoute: _route(widget.current),
+      toRoute: route,
+      position: _position.value,
+      velocity: _position.velocity,
+      pressure: _pressure.value,
+      pressureVelocity: _pressure.velocity,
+    );
+    _navTransitions[router] = transition;
+    router.go(route);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (identical(_navTransitions[router], transition)) {
+        _navTransitions[router] = null;
+      }
+    });
   }
 
   @override
   void dispose() {
-    _indicatorAnimation.dispose();
-    _indicatorController.dispose();
+    _position.dispose();
+    _pressure.dispose();
     super.dispose();
-  }
-
-  int _tabIndex(AppTab tab) => switch (tab) {
-    AppTab.home => 0,
-    AppTab.boilerhouses => 1,
-    AppTab.journal => 2,
-    AppTab.profile => 3,
-  };
-
-  void _navigate(BuildContext context, String route) {
-    _pendingNavTransitionFrom = widget.current;
-    context.go(route);
   }
 
   @override
@@ -433,179 +560,130 @@ class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
       heightFactor: 1,
       alignment: Alignment.bottomCenter,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: kMaxScreenContentWidth),
+        constraints: const BoxConstraints(maxWidth: 600),
         child: Padding(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-      child: SafeArea(
-        top: false,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: RepaintBoundary(
-            child: Container(
-              height: 72,
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+          child: SafeArea(
+            top: false,
+            child: DecoratedBox(
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xEBFFFFFF), Color(0xCFFFFFFF)],
-                ),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.72)),
-                boxShadow: [
+                borderRadius: BorderRadius.circular(30),
+                boxShadow: const [
                   BoxShadow(
-                    color: AppTheme.primary.withValues(alpha: 0.12),
-                    blurRadius: 20,
-                    offset: const Offset(0, 6),
+                    color: Color(0x194658D8),
+                    blurRadius: 18,
+                    offset: Offset(0, 6),
                   ),
                 ],
               ),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  const fabWidth = 68.0;
-                  const indicatorWidth = 54.0;
-                  final itemWidth = (constraints.maxWidth - fabWidth) / 4;
-
-                  return Stack(
-                    children: [
-                      Positioned(
-                        left: 0,
-                        top: 10,
-                        width: indicatorWidth,
-                        height: 50,
-                        child: AnimatedBuilder(
-                          animation: _indicatorAnimation,
-                          child: const IgnorePointer(
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.all(
-                                  Radius.circular(22),
-                                ),
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [
-                                    Color(0x5C20B8D2),
-                                    Color(0x384658D8),
-                                  ],
-                                ),
-                                border: Border.fromBorderSide(
-                                  BorderSide(color: Color(0xB8FFFFFF)),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(30),
+                // One bounded backdrop for the entire bar; the moving lens is
+                // paint-only, with no nested filters or animated saveLayers.
+                child: BackdropFilter(
+                  filter: _blur,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(30),
+                      gradient: const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [Color(0xCFFFFFFF), Color(0x99EDF3FF)],
+                      ),
+                      border: Border.all(color: const Color(0xCFFFFFFF)),
+                    ),
+                    child: SizedBox(
+                      height: 72,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          IgnorePointer(
+                            child: RepaintBoundary(
+                              child: CustomPaint(
+                                key: const ValueKey('glass-nav-lens'),
+                                painter: _LiquidLensPainter(
+                                  position: _position,
+                                  pressure: _pressure,
+                                  textDirection: Directionality.of(context),
                                 ),
                               ),
                             ),
                           ),
-                          builder: (context, child) {
-                            final fromLeft = _tabLeft(
-                              _fromIndex,
-                              itemWidth,
-                              fabWidth,
-                            );
-                            final toLeft = _tabLeft(
-                              _toIndex,
-                              itemWidth,
-                              fabWidth,
-                            );
-                            final left =
-                                fromLeft +
-                                (toLeft - fromLeft) *
-                                    _indicatorAnimation.value +
-                                (itemWidth - indicatorWidth) / 2;
-                            return Transform.translate(
-                              offset: Offset(left, 0),
-                              child: RepaintBoundary(child: child),
-                            );
-                          },
-                        ),
-                      ),
-                      Row(
-                        children: [
-                          _item(
-                            context,
-                            Icons.home_rounded,
-                            l.navHome,
-                            '/home',
-                            AppTab.home,
-                          ),
-                          _item(
-                            context,
-                            Icons.factory_outlined,
-                            l.navBoilerhouses,
-                            '/boilerhouses',
-                            AppTab.boilerhouses,
-                          ),
-                          _fab(context),
-                          _item(
-                            context,
-                            Icons.menu_book_rounded,
-                            l.navJournal,
-                            '/journal',
-                            AppTab.journal,
-                          ),
-                          _item(
-                            context,
-                            Icons.person_rounded,
-                            l.navProfile,
-                            '/profile',
-                            AppTab.profile,
+                          Material(
+                            type: MaterialType.transparency,
+                            child: Row(
+                              children: [
+                                _item(Icons.home_rounded, l.navHome, AppTab.home),
+                                _item(Icons.factory_outlined, l.navBoilerhouses,
+                                    AppTab.boilerhouses),
+                                _fab(l.navJournal),
+                                _item(Icons.menu_book_rounded, l.navJournal,
+                                    AppTab.journal),
+                                _item(Icons.person_rounded, l.navProfile,
+                                    AppTab.profile),
+                              ],
+                            ),
                           ),
                         ],
                       ),
-                    ],
-                  );
-                },
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
         ),
       ),
-        ),
-      ),
     );
   }
 
-  Widget _item(
-    BuildContext context,
-    IconData icon,
-    String label,
-    String route,
-    AppTab tab,
-  ) {
+  Widget _item(IconData icon, String label, AppTab tab) {
     final selected = tab == widget.current;
-    final color = selected ? AppTheme.primary : AppTheme.inkFaint;
+    final color = selected ? AppTheme.primary : AppTheme.inkSoft;
+    void activate() => _navigate(tab);
     return Expanded(
       child: Semantics(
+        key: ValueKey('glass-nav-${tab.name}'),
         button: true,
         selected: selected,
         label: label,
+        onTap: activate,
+        excludeSemantics: true,
         child: Tooltip(
           message: label,
+          excludeFromSemantics: true,
           child: InkResponse(
-            onTap: selected ? null : () => _navigate(context, route),
-            radius: 34,
+            onTap: activate,
+            onTapDown: (_) => _press(tab),
+            onTapUp: (_) => _release(),
+            onTapCancel: _cancelPress,
+            splashFactory: NoSplash.splashFactory,
+            highlightColor: Colors.transparent,
+            radius: 30,
             child: SizedBox.expand(
-              child: ExcludeSemantics(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(icon, size: 24, color: color),
-                    if (MediaQuery.textScalerOf(context).scale(10.5) <= 14) ...[
-                      const SizedBox(height: 3),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 2),
-                        child: Text(
-                          label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                            color: color,
-                          ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(icon, size: 24, color: color),
+                  // Large text uses icon-only tabs, retaining full spoken
+                  // labels and tooltips rather than shrinking the user's text.
+                  if (MediaQuery.textScalerOf(context).scale(10.5) <= 14) ...[
+                    const SizedBox(height: 3),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                          color: color,
                         ),
                       ),
-                    ],
+                    ),
                   ],
-                ),
+                ],
               ),
             ),
           ),
@@ -614,45 +692,130 @@ class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
     );
   }
 
-  double _tabLeft(int index, double itemWidth, double fabWidth) {
-    if (index < 2) return index * itemWidth;
-    return 2 * itemWidth + fabWidth + (index - 2) * itemWidth;
-  }
-
-  Widget _fab(BuildContext context) {
-    return SizedBox(
-      width: 68,
-      child: Center(
-        child: Semantics(
-          button: true,
-          label: AppL10n.of(ref.watch(selectedLanguageProvider)).navJournal,
-          child: GestureDetector(
-          onTap: widget.onFab ?? () => _navigate(context, '/journal'),
-          child: Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [AppTheme.accent, AppTheme.primary],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppTheme.primary.withValues(alpha: 0.35),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6),
+  Widget _fab(String label) {
+    void activate() {
+      if (widget.onFab != null) {
+        widget.onFab!();
+      } else {
+        _navigate(AppTab.journal);
+      }
+    }
+    return Expanded(
+      child: Semantics(
+        key: const ValueKey('glass-nav-add'),
+        button: true,
+        label: label,
+        onTap: activate,
+        excludeSemantics: true,
+        child: Tooltip(
+          message: label,
+          excludeFromSemantics: true,
+          child: InkResponse(
+            onTap: activate,
+            radius: 30,
+            child: SizedBox.expand(
+              child: Center(
+                child: Container(
+                  width: 52,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [AppTheme.accent, AppTheme.primary],
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppTheme.primary.withValues(alpha: 0.25),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.add_rounded,
+                      color: Colors.white, size: 28),
                 ),
-              ],
+              ),
             ),
-            child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
-          ),
           ),
         ),
       ),
     );
   }
+}
+
+class _LiquidLensPainter extends CustomPainter {
+  _LiquidLensPainter({
+    required this.position,
+    required this.pressure,
+    required this.textDirection,
+  }) : super(repaint: Listenable.merge([position, pressure]));
+
+  final AnimationController position;
+  final AnimationController pressure;
+  final TextDirection textDirection;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final slotWidth = size.width / 5;
+    final direction = textDirection == TextDirection.ltr ? 1.0 : -1.0;
+    final speed = (position.velocity / 12).clamp(-1.0, 1.0) * direction;
+    final press = pressure.value.clamp(-.15, 1.0);
+    final rx = (slotWidth - 8).clamp(46.0, 82.0) / 2 *
+        (1 + speed.abs() * .24 + press * .12);
+    final ry = 26 * (1 - speed.abs() * .14 - press * .16);
+    final logicalX = (position.value + .5) * slotWidth;
+    final x = (direction > 0 ? logicalX : size.width - logicalX)
+        .clamp(rx + 3, size.width - rx - 3);
+    final y = size.height / 2 + press * 1.5;
+    final lean = speed * rx * .18;
+    final rect = Rect.fromCenter(
+      center: Offset(x, y), width: rx * 2, height: ry * 2,
+    );
+    // The leading shoulder swells while the trailing shoulder narrows. Press
+    // pressure flattens the droplet; the release spring briefly rounds it out.
+    final lens = Path()
+      ..moveTo(x + lean, y - ry)
+      ..cubicTo(x + rx * .72, y - ry, x + rx, y - ry * .62, x + rx, y)
+      ..cubicTo(x + rx, y + ry * .64, x + rx * .62, y + ry,
+          x - lean * .5, y + ry)
+      ..cubicTo(x - rx * .72, y + ry, x - rx, y + ry * .56, x - rx, y)
+      ..cubicTo(x - rx, y - ry * .64, x - rx * .62, y - ry,
+          x + lean, y - ry)
+      ..close();
+    canvas.drawPath(lens.shift(const Offset(0, 2)),
+        Paint()..color = const Color(0x124658D8));
+    canvas.drawPath(lens, Paint()..shader = const LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: [Color(0x8AFFFFFF), Color(0x5920B8D2), Color(0x484658D8)],
+      stops: [0, .48, 1],
+    ).createShader(rect));
+    canvas.drawPath(lens, Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.15
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xF5FFFFFF), Color(0x66FFFFFF), Color(0x704658D8)],
+      ).createShader(rect));
+    final glint = Path()
+      ..moveTo(x - rx * .72, y - ry * .48)
+      ..cubicTo(x - rx * .54, y - ry * .88, x + lean - rx * .2,
+          y - ry * .92, x + lean + rx * .25, y - ry * .86);
+    canvas.drawPath(glint, Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = 1.5
+      ..color = const Color(0xCCFFFFFF));
+  }
+
+  @override
+  bool shouldRepaint(covariant _LiquidLensPainter oldDelegate) =>
+      oldDelegate.position != position ||
+      oldDelegate.pressure != pressure ||
+      oldDelegate.textDirection != textDirection;
 }
 
 /// Standard screen shell: gradient backdrop, transparent scaffold, optional

@@ -134,7 +134,9 @@ class FirebaseService {
     if (cutoff is! Timestamp || authTime == null || authTime.isBefore(cutoff.toDate())) return null;
     final doc = await _users.doc(uid).get(_server); final data = doc.data();
     if (data == null || data['role'] != d['role'] || data['status'] != d['status'] || data['sessionValidAfter'] != cutoff ||
-        !listEquals(data['boilerhouseIds'] as List?,d['boilerhouseIds'] as List?)) return null;
+        !listEquals(data['boilerhouseIds'] as List?,d['boilerhouseIds'] as List?)) {
+      return null;
+    }
     return _userFromDoc(doc);
   }
   Stream<AppUser?> currentUserStream(String uid) =>
