@@ -284,6 +284,13 @@ class AppL10n {
   String get profileLangLatin => isCyrl ? 'Ўзбек (лот.)' : 'O\'zbek (lot.)';
   String get profileLangChanged =>
       isCyrl ? 'Тил ўзгартирилди' : 'Til o\'zgartirildi';
+  String get profileDarkMode => isCyrl ? 'Тунги режим' : 'Tungi rejim';
+  String get profileDarkModeHint => isCyrl
+      ? 'Қоронғи интерфейсдан фойдаланиш'
+      : 'Qorong\'i interfeysdan foydalanish';
+  String get settingsSaveFailed => isCyrl
+      ? 'Созлама ушбу сеанс учун ўзгарди, лекин қурилмада сақланмади. Қайта урининг.'
+      : 'Sozlama ushbu seans uchun o\'zgardi, lekin qurilmada saqlanmadi. Qayta urining.';
   String get profileChangePassword =>
       isCyrl ? 'Паролни ўзгартириш' : 'Parolni o\'zgartirish';
   String get passwordCurrent => isCyrl ? 'Жорий парол' : 'Joriy parol';
@@ -408,6 +415,23 @@ class AppL10n {
   String get formCategory => isCyrl ? 'Категория' : 'Kategoriya';
   String get formText => isCyrl ? 'Матн' : 'Matn';
   String get formNumber => isCyrl ? 'Рақами' : 'Raqami';
+  String get archiveAction => isCyrl ? 'Архивлаш' : 'Arxivlash';
+  String archiveConfirm(String name) => isCyrl
+      ? '«$name» архивлансинми? Ёзув фаол рўйхатдан яширилади, тарих ва боғланишлар сақланади.'
+      : '«$name» arxivlansinmi? Yozuv faol ro\'yxatdan yashiriladi, tarix va bog\'lanishlar saqlanadi.';
+  String get archivedReferenceLabel => isCyrl
+      ? 'Архивланган ёки мавжуд бўлмаган ёзув'
+      : 'Arxivlangan yoki mavjud bo\'lmagan yozuv';
+  String get archivedReferenceNotice => isCyrl
+      ? 'Боғланган маълумот архивланган ёки мавжуд эмас. Фаол ёзувни танланг ёки боғланишни кўчириш учун администраторга мурожаат қилинг. Тарих сақланади.'
+      : 'Bog\'langan ma\'lumot arxivlangan yoki mavjud emas. Faol yozuvni tanlang yoki bog\'lanishni ko\'chirish uchun administratorga murojaat qiling. Tarix saqlanadi.';
+  String get activeReferenceRequired => isCyrl
+      ? 'Фаол ёзувни танланг'
+      : 'Faol yozuvni tanlang';
+  String get dataQualityWarning => isCyrl
+      ? 'Айрим ёзувларни кўрсатиб бўлмади. Қолган маълумотлардан фойдаланиш мумкин. Текшириш учун администраторга мурожаат қилинг.'
+      : 'Ayrim yozuvlarni ko\'rsatib bo\'lmadi. Qolgan ma\'lumotlardan foydalanish mumkin. Tekshirish uchun administratorga murojaat qiling.';
+  String get userBlocked => isCyrl ? 'Блокланган' : 'Bloklangan';
   String get deleteConfirm => isCyrl ? 'Ўчириш?' : 'O\'chirish?';
   String get no => isCyrl ? 'Йўқ' : 'Yo\'q';
   String get yes => isCyrl ? 'Ҳа' : 'Ha';

@@ -33,3 +33,14 @@ Local APK: `H:/Projects/Issiqlik_Taminoti_1.2.1.apk` (57,506,981 bytes).
 AyuGram was observed initially, then exited. It was unavailable through the desktop launcher when delivery was attempted; Saved Messages delivery is not confirmed. Do not claim it was sent.
 
 The prior `README.md`/`security/README.md` statements that no Firestore deployment has occurred are superseded for Rules and indexes by this release note. They remain correct for Storage deployment, business-data migration, account promotion and billing upgrades.
+
+## Addendum — rebuild 1.2.1 (code 7) after the audit remediation (2026-11-07)
+
+Follow-up build with the audit-fix set: archive-with-history instead of hard deletes, classified sign-in/registration failures, legacy-doc-tolerant streams with per-document skip and data-quality banner, persisted language/dark mode, dark theme wiring, documented `tools/operator.cjs` provisioning, dead dependencies/seeds/schematics removed, Gitleaks job enforced in CI, single-read boilerhouse reference validation instead of serial round-trips, and no unbounded re-read loops. README build steps target `1.2.1` again (`code 7` supersedes `code 6`).
+
+Verification: `flutter analyze` clean (0 issues), all 50 Dart widget/service tests pass, operator suite green, release APK signed with the same RSA-3072 key.
+
+APK: `build/issiqlik-taminoti-v1.2.1-7-release.apk` (58.0 MB), versionName 1.2.1 / versionCode 7.
+APK SHA256: `3F6EF28CD471A03097C7C369C7E92ADADB65303C06EC56183638F154162B2818`.
+
+The first-admin bootstrap requirement is unchanged: use `tools/operator.cjs` (documented in `security/README.md`) — registration still always creates `member/pending`.

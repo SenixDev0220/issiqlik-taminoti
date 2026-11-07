@@ -187,7 +187,8 @@ class _AppState extends ConsumerState<App> {
   @override
   Widget build(BuildContext context) {
     ref.watch(appStateInitProvider);
-    final lang = ref.watch(selectedLanguageProvider);
+    ref.watch(selectedLanguageProvider);
+    final darkMode = ref.watch(darkModeProvider);
 
     ref.listen(currentUserProvider, (previous, user) {
       if (user == null || user.status != UserStatus.active) {
@@ -218,9 +219,10 @@ class _AppState extends ConsumerState<App> {
     return SessionTimeoutManager(
       onTimeout: () => _router.go('/login'),
       child: MaterialApp.router(
-        key: ValueKey(lang),
         title: AppConstants.appName,
         theme: AppTheme.lightTheme,
+        darkTheme: AppTheme.darkTheme,
+        themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
         scrollBehavior: MaterialScrollBehavior().copyWith(
           physics: const BouncingScrollPhysics(
             parent: AlwaysScrollableScrollPhysics(),

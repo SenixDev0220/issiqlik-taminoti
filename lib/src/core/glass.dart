@@ -5,10 +5,16 @@ import 'package:flutter/physics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'auth_messages.dart';
+import '../services/auth_result.dart';
+import '../services/bounded_operations.dart';
 import 'app_state.dart';
 import 'app_theme.dart';
+import 'data_quality.dart';
 import 'l10n.dart';
 import 'firestore_sync_tracker.dart';
+
+final dataQualityProvider = StreamProvider<int>((ref) => DataQualityTracker.instance.stream);
 
 /// Extra scroll padding so content is not hidden behind [GlassBottomNav].
 const double kBottomNavSpace = 110;
@@ -71,9 +77,14 @@ Future<bool> runUiAction(
   } catch (error) {
     if (context.mounted) {
       final l = AppL10n.of(ref.read(selectedLanguageProvider));
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(error is UnsupportedError ? l.operatorAssistance : l.syncError),
-      ));
+      final message = error is AuthFlowException
+          ? l.authFailure(error.failure)
+          : error is PartialOperationException
+          ? (l.isCyrl
+              ? 'Амал қисман бажарилди ёки натижа ҳали номаълум. Рўйхатни янгиланг; хабарни кўр-кўрона қайта юборманг.'
+              : 'Amal qisman bajarildi yoki natija hali noma’lum. Ro‘yxatni yangilang; xabarni ko‘r-ko‘rona qayta yubormang.')
+          : error is UnsupportedError ? l.operatorAssistance : l.syncError;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
     }
     return false;
   } finally {
@@ -91,19 +102,18 @@ class AppBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = AppTheme.isDark(context);
     return Stack(
       children: [
-        const Positioned.fill(
+        Positioned.fill(
           child: DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFFF7F8FE),
-                  Color(0xFFE9EDFC),
-                  Color(0xFFDCE8F8),
-                ],
+                colors: dark
+                    ? const [Color(0xFF14182A), Color(0xFF1C2440), Color(0xFF142D3B)]
+                    : const [Color(0xFFF7F8FE), Color(0xFFE9EDFC), Color(0xFFDCE8F8)],
               ),
             ),
           ),
@@ -176,9 +186,11 @@ class _GlassCardState extends State<GlassCard> {
 
   @override
   Widget build(BuildContext context) {
+    final dark = AppTheme.isDark(context);
+    final fill = AppTheme.glassFillFor(context);
     final shape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(widget.radius),
-      side: const BorderSide(color: AppTheme.glassBorder, width: 1),
+      side: BorderSide(color: AppTheme.glassBorderFor(context), width: 1),
     );
     return Container(
       margin: widget.margin,
@@ -205,10 +217,10 @@ class _GlassCardState extends State<GlassCard> {
           curve: Curves.elasticOut,
           child: Material(
             color: widget.tint == null
-                ? AppTheme.glassFill
+                ? fill
                 : Color.alphaBlend(
                     widget.tint!.withValues(alpha: 0.10),
-                    AppTheme.glassFill,
+                    fill,
                   ),
             shape: shape,
             clipBehavior: Clip.antiAlias,
@@ -224,8 +236,8 @@ class _GlassCardState extends State<GlassCard> {
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                     colors: [
-                      Colors.white.withValues(alpha: 0.24),
-                      Colors.white.withValues(alpha: 0.02),
+                      Colors.white.withValues(alpha: dark ? 0.04 : 0.24),
+                      Colors.white.withValues(alpha: dark ? 0 : 0.02),
                     ],
                   ),
                 ),
@@ -254,6 +266,7 @@ class GlassIconTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final color = AppTheme.adaptiveColor(context, this.color);
     return Container(
       width: size,
       height: size,
@@ -283,6 +296,7 @@ class StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final color = AppTheme.adaptiveColor(context, this.color);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -556,6 +570,7 @@ class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
   @override
   Widget build(BuildContext context) {
     final l = AppL10n.of(ref.watch(selectedLanguageProvider));
+    final dark = AppTheme.isDark(context);
     return Align(
       heightFactor: 1,
       alignment: Alignment.bottomCenter,
@@ -585,12 +600,14 @@ class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
                   child: DecoratedBox(
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(30),
-                      gradient: const LinearGradient(
+                      gradient: LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
-                        colors: [Color(0xCFFFFFFF), Color(0x99EDF3FF)],
+                        colors: dark
+                            ? const [Color(0xE620253A), Color(0xCC1C3045)]
+                            : const [Color(0xCFFFFFFF), Color(0x99EDF3FF)],
                       ),
-                      border: Border.all(color: const Color(0xCFFFFFFF)),
+                      border: Border.all(color: dark ? AppTheme.darkGlassBorder : const Color(0xCFFFFFFF)),
                     ),
                     child: SizedBox(
                       height: 72,
@@ -605,6 +622,7 @@ class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
                                   position: _position,
                                   pressure: _pressure,
                                   textDirection: Directionality.of(context),
+                                  dark: dark,
                                 ),
                               ),
                             ),
@@ -639,7 +657,7 @@ class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
 
   Widget _item(IconData icon, String label, AppTab tab) {
     final selected = tab == widget.current;
-    final color = selected ? AppTheme.primary : AppTheme.inkSoft;
+    final color = AppTheme.adaptiveColor(context, selected ? AppTheme.primary : AppTheme.inkSoft);
     void activate() => _navigate(tab);
     return Expanded(
       child: Semantics(
@@ -750,11 +768,13 @@ class _LiquidLensPainter extends CustomPainter {
     required this.position,
     required this.pressure,
     required this.textDirection,
+    required this.dark,
   }) : super(repaint: Listenable.merge([position, pressure]));
 
   final AnimationController position;
   final AnimationController pressure;
   final TextDirection textDirection;
+  final bool dark;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -786,19 +806,23 @@ class _LiquidLensPainter extends CustomPainter {
       ..close();
     canvas.drawPath(lens.shift(const Offset(0, 2)),
         Paint()..color = const Color(0x124658D8));
-    canvas.drawPath(lens, Paint()..shader = const LinearGradient(
+    canvas.drawPath(lens, Paint()..shader = LinearGradient(
       begin: Alignment.topLeft,
       end: Alignment.bottomRight,
-      colors: [Color(0x8AFFFFFF), Color(0x5920B8D2), Color(0x484658D8)],
-      stops: [0, .48, 1],
+      colors: dark
+          ? const [Color(0x337B8DF0), Color(0x4420B8D2), Color(0x484658D8)]
+          : const [Color(0x8AFFFFFF), Color(0x5920B8D2), Color(0x484658D8)],
+      stops: const [0, .48, 1],
     ).createShader(rect));
     canvas.drawPath(lens, Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.15
-      ..shader = const LinearGradient(
+      ..shader = LinearGradient(
         begin: Alignment.topLeft,
         end: Alignment.bottomRight,
-        colors: [Color(0xF5FFFFFF), Color(0x66FFFFFF), Color(0x704658D8)],
+        colors: dark
+            ? const [Color(0x807B8DF0), Color(0x40FFFFFF), Color(0x704658D8)]
+            : const [Color(0xF5FFFFFF), Color(0x66FFFFFF), Color(0x704658D8)],
       ).createShader(rect));
     final glint = Path()
       ..moveTo(x - rx * .72, y - ry * .48)
@@ -808,14 +832,15 @@ class _LiquidLensPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeWidth = 1.5
-      ..color = const Color(0xCCFFFFFF));
+      ..color = dark ? const Color(0x80FFFFFF) : const Color(0xCCFFFFFF));
   }
 
   @override
   bool shouldRepaint(covariant _LiquidLensPainter oldDelegate) =>
       oldDelegate.position != position ||
       oldDelegate.pressure != pressure ||
-      oldDelegate.textDirection != textDirection;
+      oldDelegate.textDirection != textDirection ||
+      oldDelegate.dark != dark;
 }
 
 /// Standard screen shell: gradient backdrop, transparent scaffold, optional
@@ -854,6 +879,7 @@ class GlassScaffold extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final syncState = ref.watch(firestoreSyncStateProvider).valueOrNull;
+    final unavailableRecords = ref.watch(dataQualityProvider).valueOrNull ?? 0;
     final language = AppL10n.of(ref.watch(selectedLanguageProvider));
     return AppBackground(
       child: Scaffold(
@@ -878,6 +904,23 @@ class GlassScaffold extends ConsumerWidget {
                 syncState.status != FirestoreSyncStatus.checking &&
                 syncState.status != FirestoreSyncStatus.synced)
               _FirestoreSyncBanner(state: syncState, l10n: language),
+            if (unavailableRecords > 0)
+              Semantics(
+                liveRegion: true,
+                child: Material(
+                  color: AppTheme.warning.withValues(alpha: 0.12),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        Icon(Icons.info_outline, size: 18, color: AppTheme.adaptiveColor(context, AppTheme.warning)),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(language.dataQualityWarning, style: Theme.of(context).textTheme.bodySmall)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: Center(
                 child: ConstrainedBox(

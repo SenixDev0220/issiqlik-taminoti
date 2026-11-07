@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
+import '../../core/l10n.dart';
 import '../../domain/models/boiler_house.dart';
 import '../auth/auth_providers.dart';
 import 'boilerhouse_providers.dart';
@@ -110,7 +111,7 @@ const _statusColors = <BoilerHouseStatus, Color>{
 
 class _BoilerHouseCard extends StatelessWidget {
   final BoilerHouse boilerHouse;
-  final dynamic l;
+  final AppL10n l;
   const _BoilerHouseCard({required this.boilerHouse, required this.l});
 
   @override

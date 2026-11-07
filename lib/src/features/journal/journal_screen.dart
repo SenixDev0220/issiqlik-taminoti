@@ -1,10 +1,8 @@
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../core/app_state.dart';
 import '../../core/app_theme.dart';
@@ -541,10 +539,10 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
   late final TextEditingController _titleCtrl;
   late final TextEditingController _descCtrl;
   late final TextEditingController _categoryCtrl;
+  late final String _id;
+  late final DateTime _createdAt;
   late JournalEntryImportance _importance;
   late JournalEntryStatus _status;
-  final List<File> _newPhotos = [];
-  late List<String> _existingPhotoUrls;
   bool _saving = false;
   String? _boilerHouseId;
 
@@ -554,13 +552,14 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
   void initState() {
     super.initState();
     final e = widget.existing;
+    _id = e?.id ?? FirebaseService.instance.newDocumentId('journal');
+    _createdAt = e?.createdAt ?? DateTime.now();
     _boilerHouseId = e?.boilerHouseId;
     _titleCtrl = TextEditingController(text: e?.title ?? '');
     _descCtrl = TextEditingController(text: e?.description ?? '');
     _categoryCtrl = TextEditingController(text: e?.category ?? '');
     _importance = e?.importance ?? JournalEntryImportance.normal;
     _status = e?.status ?? JournalEntryStatus.open;
-    _existingPhotoUrls = List<String>.from(e?.photoPaths ?? []);
   }
 
   @override
@@ -576,25 +575,13 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
     if (!_formKey.currentState!.validate()) return;
     final user = ref.read(currentUserProvider);
     if (user == null) return;
-
-    setState(() => _saving = true);
-
-    // Upload any new photos to Firebase Storage
-    List<String> uploadedUrls = [];
-    if (_newPhotos.isNotEmpty) {
-      try {
-        uploadedUrls = await FirebaseService.instance.uploadFiles(
-          files: _newPhotos,
-          folder: 'journal_photos',
-        );
-      } catch (_) {
-        if (mounted) setState(() => _saving = false);
-        return;
-      }
+    final houseAvailable = ref.read(boilerHouseListProvider).any((house) => house.id == _boilerHouseId);
+    if (!houseAvailable) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ref.read(l10nProvider).archivedReferenceNotice)));
+      return;
     }
 
-    if (!mounted) return;
-    final allPhotos = [..._existingPhotoUrls, ...uploadedUrls];
+    setState(() => _saving = true);
 
     var saved = false;
     if (_isEditing) {
@@ -608,7 +595,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
         description: _descCtrl.text.trim(),
         importance: _importance,
         status: _status,
-        photoPaths: allPhotos,
+        photoPaths: const [],
         authorId: widget.existing!.authorId,
         authorName: widget.existing!.authorName,
         createdAt: widget.existing!.createdAt,
@@ -617,18 +604,18 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
       saved = await runUiAction(context, ref, () => ref.updateJournalEntry(updated));
     } else {
       final entry = JournalEntry(
-        id: 'je-${DateTime.now().millisecondsSinceEpoch}',
+        id: _id,
         boilerHouseId: _boilerHouseId!,
-        eventDateTime: DateTime.now(),
+        eventDateTime: _createdAt,
         category: _categoryCtrl.text.trim(),
         title: _titleCtrl.text.trim(),
         description: _descCtrl.text.trim(),
         importance: _importance,
         status: _status,
-        photoPaths: allPhotos,
+        photoPaths: const [],
         authorId: user.id,
         authorName: user.fullName,
-        createdAt: DateTime.now(),
+        createdAt: _createdAt,
         updatedAt: DateTime.now(),
       );
       saved = await runUiAction(context, ref, () => ref.addJournalEntry(entry));
@@ -637,13 +624,6 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
     if (!mounted) return;
     setState(() => _saving = false);
     if (saved) Navigator.pop(context);
-  }
-
-  Future<void> _pickPhoto({required ImageSource source}) async {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ref.read(l10nProvider).secureMediaUnavailable), duration: const Duration(seconds: 2)),
-    );
   }
 
   @override
@@ -806,38 +786,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
               ),
               const SizedBox(height: 16),
 
-              // Photos
-              Text(l.journalPhotos, style: sectionLabelStyle),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 80,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: [
-                    // Add buttons
-                    _PhotoActionButton(
-                      icon: Icons.camera_alt_outlined,
-                      onTap: () => _pickPhoto(source: ImageSource.camera),
-                    ),
-                    const SizedBox(width: 8),
-                    _PhotoActionButton(
-                      icon: Icons.photo_library_outlined,
-                      onTap: () => _pickPhoto(source: ImageSource.gallery),
-                    ),
-                    const SizedBox(width: 8),
-                    // Existing photos (URLs)
-                    ..._existingPhotoUrls.map((url) => _PhotoThumb(
-                          url: url,
-                          onRemove: () => setState(() => _existingPhotoUrls.remove(url)),
-                        )),
-                    // New photos (local files)
-                    ..._newPhotos.map((f) => _PhotoThumbLocal(
-                          file: f,
-                          onRemove: () => setState(() => _newPhotos.remove(f)),
-                        )),
-                  ],
-                ),
-              ),
+              Text(l.secureMediaUnavailable, style: Theme.of(context).textTheme.bodySmall),
               const SizedBox(height: 24),
 
               Row(
@@ -885,102 +834,5 @@ extension JournalEntryStatusX on JournalEntryStatus {
       case JournalEntryStatus.inProgress: return l.jStatusInProgress;
       case JournalEntryStatus.closed: return l.jStatusClosed;
     }
-  }
-}
-
-
-// -- Photo widgets ------------------------------------------------------------
-
-class _PhotoActionButton extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onTap;
-  const _PhotoActionButton({required this.icon, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 80,
-        height: 80,
-        decoration: BoxDecoration(
-          color: AppTheme.primary.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppTheme.primary.withValues(alpha: 0.30), style: BorderStyle.solid),
-        ),
-        child: Icon(icon, color: AppTheme.primary, size: 28),
-      ),
-    );
-  }
-}
-
-class _PhotoThumb extends StatelessWidget {
-  final String url;
-  final VoidCallback onRemove;
-  const _PhotoThumb({required this.url, required this.onRemove});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: Stack(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: const SizedBox(width: 80, height: 80,
-              child: Icon(Icons.lock_outline, color: AppTheme.inkFaint)),
-          ),
-          Positioned(
-            top: 2, right: 2,
-            child: GestureDetector(
-              onTap: onRemove,
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: AppTheme.ink.withValues(alpha: 0.55),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.close, size: 14, color: Colors.white),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PhotoThumbLocal extends StatelessWidget {
-  final File file;
-  final VoidCallback onRemove;
-  const _PhotoThumbLocal({required this.file, required this.onRemove});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: Stack(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Image.file(file, width: 80, height: 80, fit: BoxFit.cover),
-          ),
-          Positioned(
-            top: 2, right: 2,
-            child: GestureDetector(
-              onTap: onRemove,
-              child: Container(
-                padding: const EdgeInsets.all(2),
-                decoration: BoxDecoration(
-                  color: AppTheme.ink.withValues(alpha: 0.55),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.close, size: 14, color: Colors.white),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }

@@ -107,13 +107,13 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
               ),
             ),
           ),
-          Expanded(child: _buildWeekBody(l, shiftsAsync, user, canManage)),
+          Expanded(child: _buildWeekBody(l, shiftsAsync, user)),
         ],
       ),
     );
   }
 
-  Widget _buildWeekBody(AppL10n l, AsyncValue<List<Shift>> shiftsAsync, AppUser? user, bool canManage) {
+  Widget _buildWeekBody(AppL10n l, AsyncValue<List<Shift>> shiftsAsync, AppUser? user) {
     if (shiftsAsync.isLoading && !shiftsAsync.hasValue) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -144,7 +144,7 @@ class _ShiftsScreenState extends ConsumerState<ShiftsScreen> {
             shift: s,
             l: l,
             isMine: user != null && s.operatorId == user.id,
-            canDelete: canManage,
+            canArchive: user?.role == UserRole.admin,
           )));
     }
 
@@ -204,13 +204,13 @@ class _ShiftCard extends ConsumerWidget {
   final Shift shift;
   final AppL10n l;
   final bool isMine;
-  final bool canDelete;
+  final bool canArchive;
 
   const _ShiftCard({
     required this.shift,
     required this.l,
     required this.isMine,
-    required this.canDelete,
+    required this.canArchive,
   });
 
   @override
@@ -220,7 +220,7 @@ class _ShiftCard extends ConsumerWidget {
     return GlassCard(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-      onLongPress: canDelete ? () => _confirmDelete(context, ref) : null,
+      onLongPress: canArchive ? () => _confirmArchive(context, ref) : null,
       child: Row(
         children: [
           GlassIconTile(icon: _shiftIcon(shift.type), color: color),
@@ -265,7 +265,7 @@ class _ShiftCard extends ConsumerWidget {
               ],
             ],
           ),
-          if (canDelete)
+          if (canArchive)
             SizedBox(
               width: 32,
               height: 32,
@@ -284,7 +284,7 @@ class _ShiftCard extends ConsumerWidget {
                   ),
                 ],
                 onSelected: (value) {
-                  if (value == 'delete') _confirmDelete(context, ref);
+                  if (value == 'delete') _confirmArchive(context, ref);
                 },
               ),
             ),
@@ -293,7 +293,7 @@ class _ShiftCard extends ConsumerWidget {
     );
   }
 
-  void _confirmDelete(BuildContext context, WidgetRef ref) {
+  void _confirmArchive(BuildContext context, WidgetRef ref) {
     showDialog(
       context: context,
       builder: (dialogCtx) => AlertDialog(
@@ -328,6 +328,8 @@ class _ShiftSheet extends ConsumerStatefulWidget {
 
 class _ShiftSheetState extends ConsumerState<_ShiftSheet> {
   final _formKey = GlobalKey<FormState>();
+  late final String _id;
+  late final DateTime _createdAt;
   late DateTime _date;
   ShiftType _type = ShiftType.day;
   String? _boilerHouseId;
@@ -338,6 +340,8 @@ class _ShiftSheetState extends ConsumerState<_ShiftSheet> {
   @override
   void initState() {
     super.initState();
+    _id = FirebaseService.instance.newDocumentId('shifts');
+    _createdAt = DateTime.now();
     _date = widget.initialDate;
   }
 
@@ -383,7 +387,7 @@ class _ShiftSheetState extends ConsumerState<_ShiftSheet> {
 
     setState(() => _saving = true);
     final shift = Shift(
-      id: 'sh-${DateTime.now().millisecondsSinceEpoch}',
+      id: _id,
       boilerHouseId: house.id,
       boilerHouseName: house.name,
       operatorId: op.id,
@@ -392,7 +396,7 @@ class _ShiftSheetState extends ConsumerState<_ShiftSheet> {
       type: _type,
       note: _noteCtrl.text.trim(),
       createdBy: user.id,
-      createdAt: DateTime.now(),
+      createdAt: _createdAt,
     );
     final saved = await runUiAction(context, ref, () => FirebaseService.instance.addShift(shift));
     if (!mounted) return;

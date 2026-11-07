@@ -2,91 +2,46 @@
 
 [Русский](README.md) · [O'zbekcha](README_UZ.md) · [English](README_EN.md)
 
-Xorazm viloyatidagi qozonxonalar va markazlashgan issiqlik ta'minotini boshqarishga mo'ljallangan ochiq kodli Flutter ilovasi. Ilova “Xorazm Issiqlik Manbai” korxonasi xodimlari uchun yaratilgan; interfeys o'zbek kirill va lotin yozuvlarini qo'llab-quvvatlaydi.
+Qozonxona xodimlari uchun Flutter ilovasi: uskunalar, hodisalar jurnali, yo‘riqnomalar, smenalar va shaxsiy ilova bildirishnomalari. O‘zbek kirill/lotin interfeysi, saqlanadigan til va yorug‘/qorong‘i mavzu, moslashuvchan Liquid Glass navigatsiyasi.
 
-## Ilova imkoniyatlari
+## Hozirgi holat (1.2.1)
 
-| Yo'nalish | Imkoniyatlar |
-| --- | --- |
-| Qozonxonalar | Pasport ma'lumotlari, ish holati, tuman bo'yicha saralash, qidirish va sxemalar |
-| Uskunalar | Qozonxonalarga tegishli uskunalar va ularning ma'lumotlari |
-| Smena ishlari | Hodisalar jurnali, smena yozuvlari va tezkor qaydlar |
-| Ish hujjatlari | Foydalanish yo'riqnomalari va qozonxona chizmalari |
-| Bildirishnomalar | Ilova xabarlari va Firebase Cloud Messaging push-bildirishnomalari |
-| Xodimlar | Foydalanuvchilar, rollar, hisob holatlari va administrator tasdig'i |
-| Tahlil | Qozonxonalar bo'yicha umumiy ko'rsatkichlar va hududlar kesimidagi sarf |
-| Oflayn ish | Firestore keshi va matnli yozuvlarning tarmoq qaytganda sinxronlanishi |
+- Firebase Auth va Firestore Rules asosidagi Spark rejimi. Asosiy matnli amallar uchun Blaze yoki Cloud Functions shart emas.
+- **Har bir yangi hisob member/pending bo‘ladi.** Birinchi administratorni vakolatli operator aniq tekshirilgan Auth UID bo‘yicha tayinlaydi. Birinchi ro‘yxatdan o‘tgan foydalanuvchi avtomatik admin bo‘lmaydi.
+- Ruxsatlar `access/{uid}` orqali server qoidalarida tekshiriladi. Shaxsiy profil va xodimlar katalogi ajratilgan.
+- Jurnal o‘zgarishlari o‘zgarmas tarix bilan saqlanadi. Ma’lumotnomalar va smenalarni faqat admin arxivlaydi; ilovadan jismoniy o‘chirish taqiqlangan. Oldingi hujjat arxiv tarixida qoladi.
+- Bildirishnoma faqat aniq oluvchiga ko‘rinadi. Fon push, maxfiy fayl yuklash va ilovadan boshqa foydalanuvchi parolini tiklash bu Spark versiyasida yo‘q.
+- Til va mavzu SharedPreferences’da saqlanadi, parol va vakolatlar saqlanmaydi. Maxfiy Firestore ma’lumotlarining doimiy disk keshi o‘chirilgan.
+- Noto‘g‘ri hujjat butun ro‘yxatni buzmaydi: ogohlantirish bilan tashlab ketiladi. Noto‘g‘ri vakolatlar esa doimo rad etiladi.
 
-Bo'sh Firebase bazasida ro'yxatdan o'tgan birinchi foydalanuvchi faol administrator bo'ladi. Keyingi foydalanuvchilar administrator tasdig'ini kutadi. Firestore matnli yozuvlarni oflayn navbatga qo'yishi mumkin; autentifikatsiya, Cloud Functions va Firebase Storage'ga fayl yuklash tarmoqni talab qiladi.
+## Ishga tushirish va tekshirish
 
-## Texnologiyalar va arxitektura
+Flutter 3.47.6 / Dart 3.13+, Android SDK, Node 24.12+ va emulyatorlar uchun Java 21 kerak.
 
-- Flutter va Dart; Android 7.0 (API 24) — minimal versiya.
-- Firebase Authentication, Cloud Firestore, Cloud Storage va Firebase Cloud Messaging.
-- Holatni boshqarish uchun Riverpod; navigatsiya uchun GoRouter.
-- Push-bildirishnomalar va administrator tomonidan parolni yangilash uchun Firebase Cloud Functions.
-
-```mermaid
-flowchart LR
-    Screens[Flutter ekranlari] --> Providers[Riverpod providerlar]
-    Providers --> Service[FirebaseService]
-    Service --> Auth[Firebase Authentication]
-    Service --> Store[Cloud Firestore]
-    Service --> Files[Firebase Storage]
-    Store --> Rules[firestore.rules]
-    Store --> Functions[Cloud Functions]
-    Functions --> Push[Firebase Cloud Messaging]
-```
-
-Firebase xizmatlariga murojaat va Firestore hujjatlarini modellar bilan bog'lash `lib/src/services/firebase_service.dart` ichida markazlashtirilgan. Modellar `lib/src/domain/models/`, umumiy providerlar `lib/src/core/app_state.dart`, ekranlar `lib/src/features/`, marshrutlar esa `lib/app.dart` ichida. `firestore.rules` da alohida ruxsat berilmagan yo'llar yopiq.
-
-## Ishga tushirish
-
-### Kerakli vositalar
-
-- `pubspec.yaml` dagi Dart SDK talabiga mos Flutter SDK.
-- Android APK yig'ish uchun Android SDK va JDK 17.
-- Ilovaning Firebase funksiyalari uchun o'zingiz sozlagan Firebase loyihasi.
-
-```bash
-flutter pub get
-flutter run
-```
-
-### Tekshiruv va APK yig'ish
-
-```bash
+```sh
+flutter pub get --enforce-lockfile
 flutter analyze
 flutter test
-flutter test test/firestore_sync_tracker_test.dart
-flutter build apk --release
+npm ci --ignore-scripts
+npm run test:security
+npm run test:operator
+flutter build apk --release --obfuscate --split-debug-info=build/symbols/1.2.1
 ```
 
-Android va Flutter SDK manzillarini lokal `android/local.properties` faylida ko'rsating; bu fayl GitHub'ga yuborilmaydi. Hozirgi release APK konfiguratsiyasi sinov uchun debug kalit bilan imzolanadi. Google Play uchun maxfiy release keystore sozlash kerak.
+Windows’da desktop symlink huquqi bo‘lmasa Git Bash Flutter buyruqlariga `FLUTTER_WINDOWS=false FLUTTER_LINUX=false` qo‘shing. `pub get` xatosidan keyin `--no-pub` bilan davom etmang: Android plagin registratori yaratilishi shart.
 
-## Firebase'ni sozlash
+Release uchun maxfiy tashqi keystore va Git’dan chiqarilgan `android/key.properties` kerak. Release debug kalitga avtomatik qaytmaydi. CI faqat aniq belgilangan debug/test APK yig‘adi; haqiqiy imzo kaliti CI’ga berilmaydi. CI’da majburiy Gitleaks tarix/manba skani ham bor.
 
-Repozitoriydagi Firebase klient konfiguratsiyasi dastlabki ilova loyihasiga tegishli. O'z loyihangiz uchun:
+## Firebase va operator
 
-1. Firebase loyihasini yarating va Android ilovasini ro'yxatdan o'tkazing.
-2. Firebase klient konfiguratsiyasini o'zingiznikiga almashtiring.
-3. Xizmatlarni joylashtirishdan oldin `firebase.json` va `.firebaserc` ni **o'z** Firebase loyihangizga moslang. Dastlabki ilova egasining Firebase xizmatlariga deploy qilmang.
-4. Authentication, Firestore, Storage va Cloud Messaging'ni sozlang hamda `firestore.rules` qoidalarini joylashtiring.
-5. Push-bildirishnomalar va administrator parolni yangilashi kerak bo'lsa, `functions/` ichida Node.js 20 bog'liqliklarini o'rnating va Cloud Functions'ni deploy qiling. Buning uchun Firebase Blaze tarif rejasi kerak bo'lishi mumkin.
-6. Boshqa muassasada ishlatishdan oldin `lib/src/data/` ichidagi qozonxona ma'lumotlari va namuna ma'lumotlarini tekshiring.
+Egasi ilgari o‘zi tanlagan admin hisobini tasdiqlagan; uning UID/email’i kodga yozilmagan. Yangi muhit yoki qayta tayyorlash uchun ADC asosidagi [operator qo‘llanmasi](security/OPERATOR.md) va `tools/operator.cjs` dan foydalaning: avval dry-run, so‘ng aniq loyiha/UID/profil/vakolat tasdig‘i va maxfiy backup.
 
-Firebase klient API kaliti xizmat hisobining maxfiy kaliti emas. Service-account JSON, yopiq kalit, parol, Android keystore yoki imzolash parolini repozitoriyga yubormang. Haqiqiy qozonxona ma'lumotlari va uchinchi tomon materiallarini qayta tarqatishdan oldin ulardan foydalanish huquqini tekshiring.
+Eski ma’lumotlarni tekshirmasdan Rules almashtirmang. `allow read, write: if true` ochmang. Blokdan chiqarilgan foydalanuvchi qayta kirishi kerak; session cutoff orqaga surilmaydi. Eski bildirishnomalar uchun oluvchilarni taxmin qilmaydigan alohida migratsiya rejasi mavjud.
 
-## Loyiha havolalari
+Eski seed ma’lumotlari va sxemalar maxfiy nusxaga saqlanib, joriy Git daraxtidan olib tashlangan. Bu eski Git history yoki tarqalgan APK nusxalarini yo‘q qilmaydi.
 
-- [Hissa qo'shish qoidalari](.github/CONTRIBUTING.md)
-- [Copilot ko'rsatmalari](.github/copilot-instructions.md)
-- [Xatolik haqida xabar berish](https://github.com/SenixDev0220/issiqlik-taminoti/issues/new?template=bug_report.yml)
-- [Yangi imkoniyat taklif qilish](https://github.com/SenixDev0220/issiqlik-taminoti/issues/new?template=feature_request.yml)
-- [Flutter CI](.github/workflows/flutter.yml) — tahlil, testlar va Android APK yig'ish; artifact 14 kun saqlanadi.
+[Cheklovlar va xavfsizlik](security/README.md) · [Ma’lumotlar shartnomasi](security/contract.md)
 
-Issue'larda parol, shaxsiy ma'lumot yoki ommaga ochiq bo'lmagan korxona ma'lumotlarini joylashtirmang. Xavfsizlikka oid muammolarni [GitHub Security Advisories](https://github.com/SenixDev0220/issiqlik-taminoti/security/advisories/new) orqali maxfiy tarzda yuboring.
+Android asosiy sozlangan platforma. Boshqa platformalar alohida Firebase sozlash va qurilmada tekshirishni talab qiladi. App Check enforcement, API-key cheklovlari, kvotalar va native kutubxonalar xavfsizligi build muvaffaqiyatining o‘zi bilan kafolatlanmaydi.
 
-## Litsenziya
-
-Manba kodi [MIT litsenziyasi](LICENSE) ostida tarqatiladi. Ushbu litsenziya uchinchi tomon suratlari, chizmalari yoki boshqa materiallariga alohida foydalanish huquqini bermaydi.
+Litsenziya: [MIT](LICENSE).

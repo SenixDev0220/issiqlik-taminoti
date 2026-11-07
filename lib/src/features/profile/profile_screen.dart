@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
+import '../../core/l10n.dart';
 import '../../domain/models/app_user.dart';
 import '../../services/firebase_service.dart';
 import '../auth/auth_providers.dart';
@@ -15,6 +16,7 @@ class ProfileScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.watch(currentUserProvider);
     final lang = ref.watch(selectedLanguageProvider);
+    final darkMode = ref.watch(darkModeProvider);
     final l = ref.watch(l10nProvider);
 
     return GlassScaffold(
@@ -136,10 +138,16 @@ class ProfileScreen extends ConsumerWidget {
                             ButtonSegment(value: 'uz_latin', label: Text(l.profileLangLatin)),
                           ],
                           selected: {lang},
-                          onSelectionChanged: (s) {
-                            ref.read(selectedLanguageProvider.notifier).state = s.first;
+                          onSelectionChanged: (selection) async {
+                            final saved = await ref
+                                .read(selectedLanguageProvider.notifier)
+                                .setValue(selection.first);
+                            if (!context.mounted) return;
+                            final message = ref.read(l10nProvider);
                             ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text(l.profileLangChanged), duration: const Duration(seconds: 1)),
+                              SnackBar(
+                                content: Text(saved ? message.profileLangChanged : message.settingsSaveFailed),
+                              ),
                             );
                           },
                         ),
@@ -149,7 +157,27 @@ class ProfileScreen extends ConsumerWidget {
                   const SizedBox(height: 12),
 
                   GlassCard(
-                    onTap: () => _showChangePassword(context, ref, l),
+                    padding: EdgeInsets.zero,
+                    child: SwitchListTile.adaptive(
+                      key: const ValueKey('profile-dark-mode'),
+                      secondary: const GlassIconTile(icon: Icons.dark_mode_outlined, size: 40),
+                      title: Text(l.profileDarkMode),
+                      subtitle: Text(l.profileDarkModeHint),
+                      value: darkMode,
+                      onChanged: (value) async {
+                        final saved = await ref.read(darkModeProvider.notifier).setValue(value);
+                        if (!saved && context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(ref.read(l10nProvider).settingsSaveFailed)),
+                          );
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  GlassCard(
+                    onTap: () => _showChangePassword(context),
                     child: Row(
                       children: [
                         const GlassIconTile(icon: Icons.lock_outline, size: 40),
@@ -214,7 +242,7 @@ class ProfileScreen extends ConsumerWidget {
     );
   }
 
-  void _showChangePassword(BuildContext context, WidgetRef ref, dynamic l) {
+  void _showChangePassword(BuildContext context) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -271,7 +299,7 @@ class ProfileScreen extends ConsumerWidget {
     }
   }
 
-  String _roleLabel(UserRole r, dynamic l) {
+  String _roleLabel(UserRole r, AppL10n l) {
     switch (r) {
       case UserRole.admin: return l.roleAdmin;
       case UserRole.coAdmin: return l.roleCoAdmin;

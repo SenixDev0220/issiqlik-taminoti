@@ -49,16 +49,30 @@ void main() {
         hasPendingWrites: false,
       );
       final write = Completer<void>();
-      tracker.trackWrite(write.future);
-
+      final tracked = tracker.trackWrite(write.future);
+      final expectation = expectLater(tracked, throwsStateError);
       write.completeError(StateError('permission denied'));
-      await Future<void>.delayed(Duration.zero);
+      await expectation;
 
       expect(tracker.state.status, FirestoreSyncStatus.error);
       expect(tracker.state.pendingWrites, 0);
 
       tracker.clearError();
       expect(tracker.state.status, FirestoreSyncStatus.synced);
+    });
+
+    test('successful later write clears error and old completions cannot corrupt reset', () async {
+      final tracker = FirestoreSyncTracker();
+      await expectLater(tracker.trackWrite(Future<void>.error(StateError('failed'))), throwsStateError);
+      expect(tracker.state.status, FirestoreSyncStatus.error);
+      await tracker.trackWrite(Future<void>.value());
+      expect(tracker.state.status, isNot(FirestoreSyncStatus.error));
+      final pending = Completer<void>();
+      final tracked = tracker.trackWrite(pending.future);
+      tracker.reset();
+      pending.complete();
+      await tracked;
+      expect(tracker.state.pendingWrites, 0);
     });
 
     test('includes pending writes reported by Firestore snapshot metadata', () {

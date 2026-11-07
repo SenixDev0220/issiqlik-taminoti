@@ -4,6 +4,7 @@ import '../domain/models/app_user.dart';
 import '../domain/models/journal_entry.dart';
 import '../domain/models/notification_model.dart';
 import '../services/firebase_service.dart';
+import 'app_settings.dart';
 import 'firestore_sync_tracker.dart';
 
 final _fb = FirebaseService.instance;
@@ -37,8 +38,24 @@ final currentUserSyncProvider = StreamProvider<AppUser?>((ref) {
   });
 });
 
-final selectedLanguageProvider = StateProvider<String>((ref) => 'uz_cyrl');
-final darkModeProvider = StateProvider<bool>((ref) => false);
+final selectedLanguageProvider = StateNotifierProvider<PersistedSetting<String>, String>((ref) {
+  final store = ref.watch(appSettingsStoreProvider);
+  return PersistedSetting<String>(
+    initialValue: 'uz_cyrl',
+    load: store.readLanguage,
+    save: store.saveLanguage,
+    normalize: AppSettingsStore.normalizeLanguage,
+  );
+});
+
+final darkModeProvider = StateNotifierProvider<PersistedSetting<bool>, bool>((ref) {
+  final store = ref.watch(appSettingsStoreProvider);
+  return PersistedSetting<bool>(
+    initialValue: false,
+    load: store.readDarkMode,
+    save: store.saveDarkMode,
+  );
+});
 
 final allUsersStreamProvider = StreamProvider<List<AppUser>>((ref) {
   return _fb.allUsersStream(user: ref.watch(currentUserProvider));

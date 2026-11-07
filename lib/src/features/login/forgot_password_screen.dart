@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
+import '../../core/l10n.dart';
 import '../../core/validators.dart';
 import '../../services/firebase_service.dart';
 import '../auth/auth_providers.dart';
@@ -56,7 +57,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     );
   }
 
-  Widget _buildSuccess(dynamic l) {
+  Widget _buildSuccess(AppL10n l) {
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -76,7 +77,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     );
   }
 
-  Widget _buildForm(dynamic l) {
+  Widget _buildForm(AppL10n l) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

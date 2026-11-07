@@ -10,7 +10,22 @@ service cloud.firestore {
   function text(v,n) { return v is string && v.size() <= n; }
   function filled(v,n) { return text(v,n) && v.size() > 0; }
   function num(v) { return v is number && v >= 0 && v <= 1000000000000; }
-  function house(id) { return filled(id,128) && exists(/databases/$(database)/documents/boilerhouses/$(id)); }
+  function house(id) { return filled(id,128) && exists(/databases/$(database)/documents/boilerhouses/$(id))
+    && get(/databases/$(database)/documents/boilerhouses/$(id)).data.get('archived', false) == false; }
+  function unarchived(d) { return d.get('archived', false) == false; }
+  function archiveEvent(c,id) { return getAfter(/databases/$(database)/documents/$(c)/$(id)/history/archive).data; }
+  function archive(c,id,b,a) { return admin() && unarchived(b)
+    && a.diff(b).affectedKeys().hasOnly(['archived','archivedAt','archivedBy'])
+    && a.archived == true && a.archivedAt == request.time && a.archivedBy == request.auth.uid
+    && !exists(/databases/$(database)/documents/$(c)/$(id)/history/archive)
+    && archiveReceipt(archiveEvent(c,id),c,id,b); }
+  function archiveReceipt(h,c,id,b) { return h.keys().hasAll(['collection','documentId','actorId','createdAt','before'])
+    && h.keys().hasOnly(['collection','documentId','actorId','createdAt','before'])
+    && h.collection == c && h.documentId == id && h.actorId == request.auth.uid
+    && h.createdAt == request.time && h.before == b; }
+  function archivalRecord(c,id,h) { return admin()
+    && archive(c,id,get(/databases/$(database)/documents/$(c)/$(id)).data,getAfter(/databases/$(database)/documents/$(c)/$(id)).data)
+    && archiveReceipt(h,c,id,get(/databases/$(database)/documents/$(c)/$(id)).data); }
   function ids(a) { return a is list && a.size() <= 30 && a.toSet().size() == a.size()
     && (a.size() < 1 || a[0] is string) && (a.size() < 2 || a[1] is string)
     && (a.size() < 3 || a[2] is string) && (a.size() < 4 || a[3] is string)
@@ -89,7 +104,7 @@ service cloud.firestore {
   }
   function boilerValid(d,id) {
     return d.keys().hasAll(['id','name','district','address','yearBuilt','modernizationYear','totalArea','workersCount','operatorsCount','installedCapacity','connectedLoad','consumers','pipelineLength','dispatchPhone','annualElectricity','annualWater','annualGas','annualHeatProduction','aboveGroundPipeline','belowGroundPipeline','defects','locationUrl','status'])
-      && d.keys().hasOnly(['id','name','district','address','yearBuilt','modernizationYear','totalArea','workersCount','operatorsCount','installedCapacity','connectedLoad','consumers','pipelineLength','dispatchPhone','annualElectricity','annualWater','annualGas','annualHeatProduction','aboveGroundPipeline','belowGroundPipeline','defects','locationUrl','status'])
+      && d.keys().hasOnly(['id','name','district','address','yearBuilt','modernizationYear','totalArea','workersCount','operatorsCount','installedCapacity','connectedLoad','consumers','pipelineLength','dispatchPhone','annualElectricity','annualWater','annualGas','annualHeatProduction','aboveGroundPipeline','belowGroundPipeline','defects','locationUrl','status','archived','archivedAt','archivedBy'])
       && d.id == id && filled(d.name,160) && text(d.district,120) && text(d.address,500)
       && d.yearBuilt is int && d.yearBuilt >= 0 && d.yearBuilt <= 2200 && d.modernizationYear is int && d.modernizationYear >= 0 && d.modernizationYear <= 2200
       && d.workersCount is int && num(d.workersCount) && d.operatorsCount is int && num(d.operatorsCount)
@@ -100,9 +115,14 @@ service cloud.firestore {
       && d.status in ['operating','maintenance','emergencyShutdown','mothballed'];
   }
   match /boilerhouses/{id} {
+    allow get: if active() && !exists(/databases/$(database)/documents/boilerhouses/$(id));
     allow read: if scoped(id);
-    allow create, update: if manager() && boilerValid(request.resource.data,id);
-    allow delete: if manager();
+    allow create: if manager() && unarchived(request.resource.data) && boilerValid(request.resource.data,id)
+      && !request.resource.data.keys().hasAny(['archivedAt','archivedBy']);
+    allow update: if archive('boilerhouses',id,resource.data,request.resource.data)
+      || (manager() && unarchived(resource.data) && boilerValid(request.resource.data,id)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived','archivedAt','archivedBy']));
+    match /history/{eventId} { allow read: if manager(); allow create: if eventId == 'archive' && archivalRecord('boilerhouses',id,request.resource.data); }
   }
   function responsible(uid,h) {
     let a = get(/databases/$(database)/documents/access/$(uid)).data;
@@ -110,7 +130,7 @@ service cloud.firestore {
   }
   function equipmentValid(d,id) {
     return d.keys().hasAll(['id','boilerHouseId','type','name','model','manufacturer','serialNumber','inventoryNumber','productionDate','installedDate','status','lastServiceDate','nextServiceDate','responsiblePersonId','notes'])
-      && d.keys().hasOnly(['id','boilerHouseId','type','name','model','manufacturer','serialNumber','inventoryNumber','productionDate','installedDate','status','lastServiceDate','nextServiceDate','responsiblePersonId','notes'])
+      && d.keys().hasOnly(['id','boilerHouseId','type','name','model','manufacturer','serialNumber','inventoryNumber','productionDate','installedDate','status','lastServiceDate','nextServiceDate','responsiblePersonId','notes','archived','archivedAt','archivedBy'])
       && d.id == id && house(d.boilerHouseId) && d.type in ['boiler','pump','heatExchanger','burner','expansionTank','other']
       && filled(d.name,160) && text(d.model,160) && text(d.manufacturer,160) && text(d.serialNumber,120) && text(d.inventoryNumber,120)
       && d.productionDate is timestamp && d.installedDate is timestamp && d.lastServiceDate is timestamp && d.nextServiceDate is timestamp
@@ -118,9 +138,14 @@ service cloud.firestore {
       && text(d.responsiblePersonId,128) && (d.responsiblePersonId == '' || responsible(d.responsiblePersonId,d.boilerHouseId));
   }
   match /equipment/{id} {
+    allow get: if active() && !exists(/databases/$(database)/documents/equipment/$(id));
     allow read: if scoped(resource.data.boilerHouseId);
-    allow create, update: if manager() && equipmentValid(request.resource.data,id);
-    allow delete: if manager();
+    allow create: if manager() && unarchived(request.resource.data) && equipmentValid(request.resource.data,id)
+      && !request.resource.data.keys().hasAny(['archivedAt','archivedBy']);
+    allow update: if archive('equipment',id,resource.data,request.resource.data)
+      || (manager() && unarchived(resource.data) && equipmentValid(request.resource.data,id)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived','archivedAt','archivedBy']));
+    match /history/{eventId} { allow read: if manager(); allow create: if eventId == 'archive' && archivalRecord('equipment',id,request.resource.data); }
   }
   function authorName() {
     let p = get(/databases/$(database)/documents/userProfiles/$(request.auth.uid)).data;
@@ -144,6 +169,7 @@ service cloud.firestore {
       && h.operation == (a.deleted ? 'delete' : 'update') && a.historyId == hid;
   }
   match /journal/{id} {
+    allow get: if active() && !exists(/databases/$(database)/documents/journal/$(id));
     allow read: if scoped(resource.data.boilerHouseId);
     allow create: if scoped(request.resource.data.boilerHouseId) && journalValid(request.resource.data)
       && request.resource.data.authorId == request.auth.uid && request.resource.data.authorName == authorName()
@@ -162,30 +188,32 @@ service cloud.firestore {
   }
   function instructionValid(d,id) {
     return d.keys().hasAll(['id','title','category','body','version','createdAt','updatedAt','authorId','urgency'])
-      && d.keys().hasOnly(['id','title','category','body','version','createdAt','updatedAt','authorId','urgency'])
+      && d.keys().hasOnly(['id','title','category','body','version','createdAt','updatedAt','authorId','urgency','archived','archivedAt','archivedBy'])
       && d.id == id && filled(d.title,200) && text(d.category,120) && text(d.body,100000) && filled(d.version,40)
       && d.createdAt is timestamp && d.updatedAt == request.time && filled(d.authorId,128) && d.urgency in ['normal','mandatory'];
   }
   match /instructions/{id} {
     allow read: if active();
-    allow create: if manager() && instructionValid(request.resource.data,id) && request.resource.data.authorId == request.auth.uid && request.resource.data.createdAt == request.time;
-    allow update: if manager() && instructionValid(request.resource.data,id) && request.resource.data.authorId == resource.data.authorId && request.resource.data.createdAt == resource.data.createdAt;
-    allow delete: if manager();
-  }
-  function bundledFile(p) {
-    return p == '' || p in ['assets/schemas/bogot.jpg','assets/schemas/gurlan.jpg','assets/schemas/khazarasp.jpg','assets/schemas/khiva.jpg','assets/schemas/kushkupir.jpg','assets/schemas/shovot.jpg','assets/schemas/tuprokkala.jpg','assets/schemas/urgench_shahar.jpg','assets/schemas/urgench_tuman.jpg','assets/schemas/yangiariq.jpg','assets/schemas/yangibozor.jpg'];
+    allow create: if manager() && unarchived(request.resource.data) && !request.resource.data.keys().hasAny(['archivedAt','archivedBy']) && instructionValid(request.resource.data,id) && request.resource.data.authorId == request.auth.uid && request.resource.data.createdAt == request.time;
+    allow update: if archive('instructions',id,resource.data,request.resource.data)
+      || (manager() && unarchived(resource.data) && instructionValid(request.resource.data,id) && request.resource.data.authorId == resource.data.authorId && request.resource.data.createdAt == resource.data.createdAt
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived','archivedAt','archivedBy']));
+    match /history/{eventId} { allow read: if manager(); allow create: if eventId == 'archive' && archivalRecord('instructions',id,request.resource.data); }
   }
   function drawingValid(d,id) {
     return d.keys().hasAll(['id','title','number','category','description','boilerHouseId','filePath','authorId','addedAt'])
-      && d.keys().hasOnly(['id','title','number','category','description','boilerHouseId','filePath','authorId','addedAt'])
+      && d.keys().hasOnly(['id','title','number','category','description','boilerHouseId','filePath','authorId','addedAt','archived','archivedAt','archivedBy'])
       && d.id == id && filled(d.title,200) && text(d.number,120) && text(d.category,120) && text(d.description,4000)
-      && house(d.boilerHouseId) && bundledFile(d.filePath) && filled(d.authorId,128) && d.addedAt is timestamp;
+      && house(d.boilerHouseId) && d.filePath == '' && filled(d.authorId,128) && d.addedAt is timestamp;
   }
   match /drawings/{id} {
+    allow get: if active() && !exists(/databases/$(database)/documents/drawings/$(id));
     allow read: if scoped(resource.data.boilerHouseId);
-    allow create: if manager() && drawingValid(request.resource.data,id) && request.resource.data.authorId == request.auth.uid && request.resource.data.addedAt == request.time;
-    allow update: if manager() && drawingValid(request.resource.data,id) && request.resource.data.authorId == resource.data.authorId && request.resource.data.addedAt == resource.data.addedAt;
-    allow delete: if manager();
+    allow create: if manager() && unarchived(request.resource.data) && !request.resource.data.keys().hasAny(['archivedAt','archivedBy']) && drawingValid(request.resource.data,id) && request.resource.data.authorId == request.auth.uid && request.resource.data.addedAt == request.time;
+    allow update: if archive('drawings',id,resource.data,request.resource.data)
+      || (manager() && unarchived(resource.data) && drawingValid(request.resource.data,id) && request.resource.data.authorId == resource.data.authorId && request.resource.data.addedAt == resource.data.addedAt
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived','archivedAt','archivedBy']));
+    match /history/{eventId} { allow read: if manager(); allow create: if eventId == 'archive' && archivalRecord('drawings',id,request.resource.data); }
   }
   match /notifications/{id} {
     allow read: if active() && resource.data.recipientId == request.auth.uid;
@@ -198,6 +226,7 @@ service cloud.firestore {
     allow update: if active() && resource.data.recipientId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) && request.resource.data.isRead == true;
   }
   match /changeLogs/{id} {
+    allow get: if active() && !exists(/databases/$(database)/documents/changeLogs/$(id));
     allow read: if scoped(resource.data.boilerHouseId);
     allow create: if scoped(request.resource.data.boilerHouseId) && house(request.resource.data.boilerHouseId)
       && request.resource.data.keys().hasAll(['boilerHouseId','title','text','photoUrls','authorId','authorName','createdAt'])
@@ -205,6 +234,8 @@ service cloud.firestore {
       && filled(request.resource.data.title,200) && text(request.resource.data.text,10000) && request.resource.data.photoUrls == []
       && request.resource.data.authorId == request.auth.uid && request.resource.data.authorName == authorName() && request.resource.data.createdAt == request.time;
     match /reactions/{rid} {
+      allow get: if scoped(get(/databases/$(database)/documents/changeLogs/$(id)).data.boilerHouseId)
+        && !exists(/databases/$(database)/documents/changeLogs/$(id)/reactions/$(rid));
       allow read: if scoped(get(/databases/$(database)/documents/changeLogs/$(id)).data.boilerHouseId);
       allow create: if scoped(get(/databases/$(database)/documents/changeLogs/$(id)).data.boilerHouseId)
         && request.resource.data.keys().hasAll(['changeLogId','text','authorId','authorName','createdAt']) && request.resource.data.keys().hasOnly(['changeLogId','text','authorId','authorName','createdAt'])
@@ -214,26 +245,24 @@ service cloud.firestore {
   }
   function shiftValid(d) {
     return d.keys().hasAll(['boilerHouseId','boilerHouseName','operatorId','operatorName','date','type','note','createdBy','createdAt'])
-      && d.keys().hasOnly(['boilerHouseId','boilerHouseName','operatorId','operatorName','date','type','note','createdBy','createdAt'])
+      && d.keys().hasOnly(['boilerHouseId','boilerHouseName','operatorId','operatorName','date','type','note','createdBy','createdAt','archived','archivedAt','archivedBy'])
       && house(d.boilerHouseId) && d.boilerHouseName == get(/databases/$(database)/documents/boilerhouses/$(d.boilerHouseId)).data.name
       && filled(d.operatorId,128) && responsible(d.operatorId,d.boilerHouseId)
       && d.operatorName == get(/databases/$(database)/documents/userProfiles/$(d.operatorId)).data.firstName + ' ' + get(/databases/$(database)/documents/userProfiles/$(d.operatorId)).data.lastName
       && d.date is timestamp && d.type in ['day','night'] && text(d.note,4000) && filled(d.createdBy,128) && d.createdAt is timestamp;
   }
   match /shifts/{id} {
+    allow get: if active() && !exists(/databases/$(database)/documents/shifts/$(id));
     allow read: if scoped(resource.data.boilerHouseId);
-    allow create: if manager() && shiftValid(request.resource.data) && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time;
-    allow update: if manager() && shiftValid(request.resource.data) && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt;
-    allow delete: if manager();
+    allow create: if manager() && unarchived(request.resource.data) && !request.resource.data.keys().hasAny(['archivedAt','archivedBy']) && shiftValid(request.resource.data) && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time;
+    allow update: if archive('shifts',id,resource.data,request.resource.data)
+      || (manager() && unarchived(resource.data) && shiftValid(request.resource.data) && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['archived','archivedAt','archivedBy']));
+    match /history/{eventId} { allow read: if manager(); allow create: if eventId == 'archive' && archivalRecord('shifts',id,request.resource.data); }
   }
-  // Client-reported activity, not authoritative server audit. Journal history above is atomic.
+  // Historical client-reported activity is read-only, not authoritative audit.
   match /audit_log/{id} {
     allow read: if manager();
-    allow create: if manager() && request.resource.data.keys().hasAll(['userId','userName','action','targetType','targetId','targetName','createdAt'])
-      && request.resource.data.keys().hasOnly(['userId','userName','action','targetType','targetId','targetName','createdAt'])
-      && request.resource.data.userId == request.auth.uid && request.resource.data.userName == authorName()
-      && request.resource.data.action in ['add','edit','delete','approve','decline','ban','unban','changeRole','resetPassword']
-      && text(request.resource.data.targetType,80) && text(request.resource.data.targetId,128) && text(request.resource.data.targetName,200) && request.resource.data.createdAt == request.time;
   }
   match /{document=**} { allow read, write: if false; }
  }

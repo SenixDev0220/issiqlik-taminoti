@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import '../../core/app_state.dart';
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
+import '../../core/l10n.dart';
 import '../../domain/models/app_user.dart';
 import '../auth/auth_providers.dart';
 
@@ -51,7 +52,7 @@ class WorkersScreen extends ConsumerWidget {
 class _WorkerCard extends StatelessWidget {
   final AppUser user;
   final int rank;
-  final dynamic l;
+  final AppL10n l;
 
   const _WorkerCard({required this.user, required this.rank, required this.l});
 
@@ -128,7 +129,7 @@ class _WorkerCard extends StatelessWidget {
     }
   }
 
-  String _roleLabel(UserRole r, dynamic l) {
+  String _roleLabel(UserRole r, AppL10n l) {
     switch (r) {
       case UserRole.admin: return l.roleAdmin;
       case UserRole.coAdmin: return l.roleCoAdmin;

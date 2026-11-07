@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
 import '../../core/validators.dart';
+import '../../core/auth_messages.dart';
+import '../../services/auth_result.dart';
 import '../auth/auth_providers.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
@@ -48,27 +50,30 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     setState(() => _loading = true);
     final l = ref.read(l10nProvider);
     final login = Validators.sanitize(_loginCtrl.text);
-    String? error;
+    SignInResult result;
     try {
-      error = await attemptLogin(ref, login, _passCtrl.text);
-    } catch (_) {
-      error = l.startupError;
+      result = await attemptLogin(ref, login, _passCtrl.text);
+    } catch (error) {
+      result = SignInResult.failure(classifyAuthFailure(error));
     }
     if (!mounted) return;
     setState(() => _loading = false);
 
-    if (error == null) {
+    if (result.succeeded) {
       _failedAttempts = 0;
       context.go('/home');
     } else {
-      _failedAttempts++;
-      if (_failedAttempts >= 5) {
-        final seconds = (30 * (_failedAttempts ~/ 5)).clamp(30, 300);
-        _lockoutUntil = DateTime.now().add(Duration(seconds: seconds));
+      // This is a local UX delay, not a server-side security boundary.
+      if (result.failure == AuthFailure.invalidCredentials) {
+        _failedAttempts++;
+        if (_failedAttempts >= 5) {
+          final seconds = (30 * (_failedAttempts ~/ 5)).clamp(30, 300);
+          _lockoutUntil = DateTime.now().add(Duration(seconds: seconds));
+        }
       }
       setState(() {
-        _error = error;
-        _isPending = error == l.loginPendingError;
+        _error = l.authFailure(result.failure ?? AuthFailure.internal);
+        _isPending = result.failure == AuthFailure.pendingApproval;
       });
     }
   }

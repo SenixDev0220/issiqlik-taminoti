@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
 import '../../core/validators.dart';
+import '../../core/auth_messages.dart';
+import '../../services/auth_result.dart';
 import '../auth/auth_providers.dart';
 
 class RegisterScreen extends ConsumerStatefulWidget {
@@ -43,26 +45,26 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     setState(() => _loading = true);
 
     final l = ref.read(l10nProvider);
-    String? error;
+    RegistrationResult result;
     try {
-    error = await registerUser(
-      ref,
-      login: Validators.sanitize(_loginCtrl.text),
-      password: _passCtrl.text,
-      firstName: Validators.sanitize(_firstNameCtrl.text),
-      lastName: Validators.sanitize(_lastNameCtrl.text),
-      phone: Validators.sanitize(_phoneCtrl.text),
-    );
-    } catch (_) {
-      error = l.startupError;
+      result = await registerUser(
+        ref,
+        login: Validators.sanitize(_loginCtrl.text),
+        password: _passCtrl.text,
+        firstName: Validators.sanitize(_firstNameCtrl.text),
+        lastName: Validators.sanitize(_lastNameCtrl.text),
+        phone: Validators.sanitize(_phoneCtrl.text),
+      );
+    } catch (error) {
+      result = RegistrationResult.failure(classifyAuthFailure(error, registration: true));
     }
 
     if (!mounted) return;
     setState(() => _loading = false);
 
-    if (error != null) {
+    if (!result.succeeded) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error), backgroundColor: AppTheme.error),
+        SnackBar(content: Text(l.authFailure(result.failure!)), backgroundColor: AppTheme.error),
       );
       return;
     }
@@ -74,7 +76,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       builder: (_) => AlertDialog(
         icon: const Icon(Icons.check_circle, color: AppTheme.success, size: 48),
         title: Text(l.registerTitle),
-        content: Text(l.registerSuccess),
+        content: Text(result.cleanupFailed ? '${l.registerSuccess}\n\n${l.registrationCleanupWarning}' : l.registerSuccess),
         actions: [
           ElevatedButton(
             onPressed: () {

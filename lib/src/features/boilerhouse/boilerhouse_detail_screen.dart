@@ -47,7 +47,10 @@ class BoilerHouseDetailScreen extends ConsumerWidget {
       return GlassScaffold(
         title: l.boilerhouseDetailTitle,
         leading: BackButton(onPressed: () => context.pop()),
-        body: Center(child: Text(l.boilerhouseNotFound)),
+        body: Center(child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(l.archivedReferenceNotice, textAlign: TextAlign.center),
+        )),
       );
     }
 
@@ -155,6 +158,9 @@ class _ChangeLogSection extends ConsumerStatefulWidget {
 
 class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
   bool _showForm = false;
+  bool _sending = false;
+  String? _draftId;
+  DateTime? _createdAt;
   final _titleC = TextEditingController();
   final _textC = TextEditingController();
 
@@ -162,20 +168,32 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
   void dispose() { _titleC.dispose(); _textC.dispose(); super.dispose(); }
 
   Future<void> _submit() async {
+    if (_sending) return;
     final user = ref.read(currentUserProvider);
     if (_titleC.text.trim().isEmpty || user == null) return;
+    // One create intent survives validation errors and failed save attempts.
+    final id = _draftId ??= _fb.newDocumentId('changeLogs');
+    final createdAt = _createdAt ??= DateTime.now();
+    setState(() => _sending = true);
     final saved = await runUiAction(context, ref, () => _fb.addChangeLog(ChangeLogEntry(
-      id: 'cl-${DateTime.now().millisecondsSinceEpoch}',
+      id: id,
       boilerHouseId: widget.boilerHouseId,
       title: _titleC.text.trim(),
       text: _textC.text.trim(),
       authorId: user.id,
       authorName: user.fullName,
-      createdAt: DateTime.now(),
+      createdAt: createdAt,
     )));
-    if (!saved || !mounted) return;
-    _titleC.clear(); _textC.clear();
-    setState(() => _showForm = false);
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (!saved) return;
+    _titleC.clear();
+    _textC.clear();
+    setState(() {
+      _draftId = null;
+      _createdAt = null;
+      _showForm = false;
+    });
   }
 
   @override
@@ -214,7 +232,7 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
                 const SizedBox(height: 8),
                 // Photo upload disabled
                 ElevatedButton.icon(
-                  onPressed: _submit,
+                  onPressed: _sending ? null : _submit,
                   icon: const Icon(Icons.send, size: 18),
                   label: Text(l.changeLogSubmit),
                 ),
@@ -234,7 +252,7 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
                 child: Text(l.changeLogEmpty, style: const TextStyle(color: AppTheme.inkFaint)),
               );
             }
-            return Column(children: entries.map((e) => _ChangeLogCard(entry: e)).toList());
+            return Column(children: entries.map((e) => _ChangeLogCard(key: ValueKey(e.id), entry: e)).toList());
           },
         ),
       ],
@@ -247,7 +265,7 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
 // ═══════════════════════════════════════════════════════════════════════════════
 class _ChangeLogCard extends ConsumerStatefulWidget {
   final ChangeLogEntry entry;
-  const _ChangeLogCard({required this.entry});
+  const _ChangeLogCard({super.key, required this.entry});
   @override
   ConsumerState<_ChangeLogCard> createState() => _ChangeLogCardState();
 }
@@ -255,25 +273,38 @@ class _ChangeLogCard extends ConsumerStatefulWidget {
 class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
   bool _showReactions = false;
   bool _showReplyField = false;
+  bool _sending = false;
+  String? _draftId;
+  DateTime? _createdAt;
   final _replyC = TextEditingController();
 
   @override
   void dispose() { _replyC.dispose(); super.dispose(); }
 
   Future<void> _sendReaction() async {
+    if (_sending) return;
     final user = ref.read(currentUserProvider);
     if (_replyC.text.trim().isEmpty || user == null) return;
+    final id = _draftId ??= _fb.newDocumentId('reactions');
+    final createdAt = _createdAt ??= DateTime.now();
+    setState(() => _sending = true);
     final saved = await runUiAction(context, ref, () => _fb.addReaction(ChangeLogReaction(
-      id: 'r-${DateTime.now().millisecondsSinceEpoch}',
+      id: id,
       changeLogId: widget.entry.id,
       text: _replyC.text.trim(),
       authorId: user.id,
       authorName: user.fullName,
-      createdAt: DateTime.now(),
+      createdAt: createdAt,
     )));
-    if (!saved || !mounted) return;
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (!saved) return;
     _replyC.clear();
-    setState(() => _showReplyField = false);
+    setState(() {
+      _draftId = null;
+      _createdAt = null;
+      _showReplyField = false;
+    });
   }
 
   @override
@@ -348,7 +379,7 @@ class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
               ),
             ),
             const SizedBox(width: 8),
-            IconButton(icon: const Icon(Icons.send, size: 18, color: AppTheme.primary), onPressed: _sendReaction),
+            IconButton(icon: const Icon(Icons.send, size: 18, color: AppTheme.primary), onPressed: _sending ? null : _sendReaction),
           ]),
         ],
 

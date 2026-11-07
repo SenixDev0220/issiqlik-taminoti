@@ -92,7 +92,7 @@ class _SessionTimeoutManagerState extends ConsumerState<SessionTimeoutManager>
     _signingOut = true;
     _timer?.cancel();
     _timer = null;
-    unawaited(signOut(ref));
+    unawaited(signOut(ref).catchError((_) {}));
     if (mounted) widget.onTimeout();
   }
 

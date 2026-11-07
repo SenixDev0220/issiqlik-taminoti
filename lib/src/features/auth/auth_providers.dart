@@ -1,78 +1,44 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_state.dart';
 import '../../core/l10n.dart';
 import '../../domain/models/app_user.dart';
+import '../../services/auth_result.dart';
 import '../../services/firebase_service.dart';
 import '../../services/push_service.dart';
 
 export '../../core/app_state.dart' show currentUserProvider, selectedLanguageProvider, darkModeProvider;
 
 final _fb = FirebaseService.instance;
+final l10nProvider = Provider<AppL10n>((ref) => AppL10n.of(ref.watch(selectedLanguageProvider)));
 
-/// Convenience l10n provider.
-final l10nProvider = Provider<AppL10n>((ref) {
-  final lang = ref.watch(selectedLanguageProvider);
-  return AppL10n.of(lang);
-});
-
-Future<String?> attemptLogin(WidgetRef ref, String login, String password) async {
-  final l = ref.read(l10nProvider);
-  final user = await _fb.signIn(login, password);
-  if (user == null) return l.loginWrongError;
-  if (user.status == UserStatus.pending) {
-    await _fb.signOut();
-    return l.loginPendingError;
-  }
-  if (user.status == UserStatus.blocked) {
-    await _fb.signOut();
-    return l.loginWrongError;
-  }
-  ref.read(currentUserProvider.notifier).state = user;
-  await PushService.instance.init();
-  return null;
+Future<SignInResult> attemptLogin(WidgetRef ref, String login, String password) async {
+  final result = await _fb.signIn(login, password);
+  if (!result.succeeded) return result;
+  ref.read(currentUserProvider.notifier).state = result.user;
+  unawaited(PushService.instance.init());
+  return result;
 }
 
 Future<void> signOut(WidgetRef ref) async {
   final uid = ref.read(currentUserProvider)?.id;
   ref.read(currentUserProvider.notifier).state = null;
-  try {
-    if (uid != null) {
-      // Must run before Firebase sign-out: clearing the token writes to the
-      // user's own profile, which requires an authenticated request.
-      await PushService.instance.unregister(uid);
-    }
-    await _fb.signOut();
-  } finally {
-    // The local session must end even if the network calls above failed.
-    ref.read(currentUserProvider.notifier).state = null;
-  }
+  if (uid != null) unawaited(PushService.instance.unregister(uid));
+  await _fb.signOut();
 }
 
-Future<String?> registerUser(WidgetRef ref, {
+Future<RegistrationResult> registerUser(WidgetRef ref, {
   required String login,
   required String password,
   required String firstName,
   required String lastName,
   required String phone,
-}) async {
-  return _fb.register(
-    login: login, password: password, firstName: firstName,
-    lastName: lastName, phone: phone,
-  );
-}
+}) => _fb.register(login: login, password: password, firstName: firstName, lastName: lastName, phone: phone);
 
-Future<String?> changePassword({
-  required String currentPassword,
-  required String newPassword,
-}) async {
-  return _fb.changePassword(
-    currentPassword: currentPassword,
-    newPassword: newPassword,
-  );
-}
+Future<String?> changePassword({required String currentPassword, required String newPassword}) =>
+    _fb.changePassword(currentPassword: currentPassword, newPassword: newPassword);
 
-/// Firebase Auth persists session by default. We just need to fetch the user doc.
 Future<AppUser?> restoreSession() async {
   final uid = _fb.currentUid;
   if (uid == null) return null;
@@ -80,8 +46,12 @@ Future<AppUser?> restoreSession() async {
     final user = await _fb.fetchUser(uid);
     if (user?.status == UserStatus.active) return user;
   } catch (_) {
-    // A cached profile cannot restore an authorized session.
+    // Server verification is mandatory; restoration never trusts cached roles.
   }
-  await _fb.signOut();
+  try {
+    await _fb.signOut();
+  } catch (_) {
+    // No user is exposed to providers even if native cleanup fails.
+  }
   return null;
 }

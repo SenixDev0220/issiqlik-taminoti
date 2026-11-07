@@ -7,15 +7,6 @@ abstract final class SecurityPolicy {
   static bool canAccess(AppUser? user, String house) =>
       isActive(user) && (isManager(user) || user!.boilerhouseIds.contains(house));
 
-  static const bundledDrawings = <String>{
-    'assets/schemas/bogot.jpg', 'assets/schemas/gurlan.jpg',
-    'assets/schemas/khazarasp.jpg', 'assets/schemas/khiva.jpg',
-    'assets/schemas/kushkupir.jpg', 'assets/schemas/shovot.jpg',
-    'assets/schemas/tuprokkala.jpg', 'assets/schemas/urgench_shahar.jpg',
-    'assets/schemas/urgench_tuman.jpg', 'assets/schemas/yangiariq.jpg',
-    'assets/schemas/yangibozor.jpg',
-  };
-  static bool isBundledDrawing(String path) => bundledDrawings.contains(path);
   static String normalizeLogin(String login) => login.trim().toLowerCase();
   static String normalizePhone(String phone) {
     final digits = phone.replaceAll(RegExp(r'[\s()-]'), '');

@@ -1,7 +1,11 @@
-import 'dart:io';
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart';
+import '../core/data_quality.dart';
+import 'account_access.dart';
+import 'auth_result.dart';
+import 'bounded_operations.dart';
+import 'document_codec.dart';
 import '../core/firestore_sync_tracker.dart';
 import '../core/security_policy.dart';
 import '../domain/models/app_user.dart';
@@ -40,26 +44,48 @@ class FirebaseService {
   Stream<User?> get authStateChanges => _auth.authStateChanges();
   String _toEmail(String login) => '${SecurityPolicy.normalizeLogin(login)}@khorazm-issiklik.app';
 
-  /// Compatibility only: imports require a reviewed operator, never client seeding.
-  Future<void> seedIfEmpty() async {}
-  Future<AppUser?> signIn(String login, String password) async {
-    try {
-      final cred = await _auth.signInWithEmailAndPassword(email: _toEmail(login), password: password);
-      final user = await fetchUser(cred.user!.uid).timeout(const Duration(seconds: 20));
-      if (user == null) await signOut();
-      return user;
-    } catch (_) { await signOut(); return null; }
-  }
-  Future<String?> register({required String login, required String password,
-    required String firstName, required String lastName, required String phone}) async {
-    login = SecurityPolicy.normalizeLogin(login); phone = SecurityPolicy.normalizePhone(phone);
-    firstName = firstName.trim(); lastName = lastName.trim();
-    if (!SecurityPolicy.validLogin(login) || !SecurityPolicy.validPhone(phone) ||
-        firstName.isEmpty || firstName.length > 80 || lastName.isEmpty || lastName.length > 80) {
-      return 'Login, ism yoki telefon formati noto‘g‘ri';
+  String? _validatedUid;
+  int _sessionGeneration = 0;
+  Future<void>? _signOutOperation;
+
+  String newDocumentId(String collection) {
+    if (!const {'boilerhouses', 'equipment', 'journal', 'instructions', 'drawings', 'shifts', 'changeLogs', 'reactions', 'notifications'}.contains(collection)) {
+      throw ArgumentError.value(collection, 'collection');
     }
-    if (password.length < 12) return 'Parol kamida 12 belgidan iborat bo‘lsin';
+    return _db.collection(collection).doc().id;
+  }
+
+  Future<SignInResult> signIn(String login, String password) async {
+    _validatedUid = null;
     try {
+      if (_signOutOperation != null) await _signOutOperation;
+      final credential = await _auth.signInWithEmailAndPassword(email: _toEmail(login), password: password);
+      final uid = credential.user?.uid;
+      if (uid == null) throw const AuthFlowException(AuthFailure.internal);
+      final user = await fetchUser(uid).timeout(const Duration(seconds: 20));
+      if (user == null) throw const AuthFlowException(AuthFailure.reauthenticationRequired);
+      _validatedUid = uid;
+      return SignInResult.success(user);
+    } catch (error) {
+      final failure = classifyAuthFailure(error);
+      await _finishSessionSafely();
+      return SignInResult.failure(failure);
+    }
+  }
+
+  Future<RegistrationResult> register({required String login, required String password,
+    required String firstName, required String lastName, required String phone}) {
+    _validatedUid = null;
+    return completeRegistrationFlow(operation: () async {
+      if (_signOutOperation != null) await _signOutOperation;
+      login = SecurityPolicy.normalizeLogin(login);
+      phone = SecurityPolicy.normalizePhone(phone);
+      firstName = firstName.trim(); lastName = lastName.trim();
+      if (!SecurityPolicy.validLogin(login) || !SecurityPolicy.validPhone(phone) ||
+          firstName.isEmpty || firstName.length > 80 || lastName.isEmpty || lastName.length > 80 ||
+          RegExp(r'[\x00-\x1f\x7f]').hasMatch('$firstName$lastName') || password.length < 12 || password.length > 64) {
+        throw const AuthFlowException(AuthFailure.invalidInput);
+      }
       User user;
       try {
         user = (await _auth.createUserWithEmailAndPassword(email: _toEmail(login), password: password)).user!;
@@ -69,42 +95,49 @@ class FirebaseService {
       }
       final uid = user.uid;
       await _trackWrite(_db.runTransaction((transaction) async {
-        final access = await transaction.get(_access.doc(uid));
+        final accessSnapshot = await transaction.get(_access.doc(uid));
         final profile = await transaction.get(_users.doc(uid));
-        if (access.exists || profile.exists) {
-          final a = access.data();
-          final p = profile.data();
-          if (a != null && p != null && a['role'] == 'member' && a['status'] == 'pending' &&
-              p['role'] == 'member' && p['status'] == 'pending' && p['id'] == uid &&
-              p['login'] == login && p['phone'] == phone && p['firstName'] == firstName && p['lastName'] == lastName &&
-              (a['boilerhouseIds'] as List?)?.isEmpty == true &&
-              a['sessionValidAfter'] == Timestamp.fromMillisecondsSinceEpoch(0)) {
+        if (accessSnapshot.exists || profile.exists) {
+          final access = AccountAccess.parse(accessSnapshot.data());
+          final existing = access.validateProfile(uid, profile.data());
+          if (access.role == UserRole.member && access.status == UserStatus.pending &&
+              access.boilerhouseIds.isEmpty && access.validAfter.millisecondsSinceEpoch == 0 &&
+              existing.login == login && existing.phone == phone &&
+              existing.firstName == firstName && existing.lastName == lastName) {
             return;
           }
-          throw StateError('Hisob administrator tekshiruvini talab qiladi');
+          throw const AuthFlowException(AuthFailure.invalidProfile);
         }
-        final data = <String,dynamic>{'id':uid,'login':login,'firstName':firstName,'lastName':lastName,
+        final data = <String, dynamic>{'id':uid,'login':login,'firstName':firstName,'lastName':lastName,
           'phone':phone,'position':'','photoUrl':'','role':'member','status':'pending',
           'boilerhouseIds':<String>[],'sessionValidAfter':Timestamp.fromMillisecondsSinceEpoch(0),
           'createdAt':FieldValue.serverTimestamp()};
-        transaction.set(_users.doc(uid),data); transaction.set(_directory.doc(uid),data);
-        transaction.set(_access.doc(uid),_authority(data)); transaction.set(_profiles.doc(uid),_profile(data));
+        transaction.set(_users.doc(uid),data);
+        transaction.set(_directory.doc(uid),data);
+        transaction.set(_access.doc(uid),_authority(data));
+        transaction.set(_profiles.doc(uid),_profile(data));
         transaction.set(_db.collection('phoneClaims').doc(phone),{'uid':uid,'createdAt':FieldValue.serverTimestamp()});
       }));
-      return null;
-    } on FirebaseAuthException {
-      return 'Ro‘yxatdan o‘tish bajarilmadi. Mavjud login bo‘lsa, uning parolidan foydalaning.';
-    } on FirebaseException {
-      return 'Ro‘yxatdan o‘tish bajarilmadi. Telefon band yoki ruxsat/tarmoq mavjud emas. Administratorga murojaat qiling.';
-    } on StateError {
-      return 'Hisob ma’lumotlarini administrator tekshirishi kerak. Mavjud hisob o‘zgartirilmadi.';
-    } finally {
+    }, cleanup: signOut);
+  }
+
+  Future<void> signOut() {
+    _validatedUid = null;
+    _sessionGeneration++;
+    DataQualityTracker.instance.clear();
+    FirestoreSyncTracker.instance.reset();
+    return _signOutOperation ??= _auth.signOut().whenComplete(() => _signOutOperation = null);
+  }
+
+  Future<void> _finishSessionSafely() async {
+    try {
       await signOut();
+    } catch (_) {
+      // Protected data stays unavailable even if the native Auth cleanup fails.
+      _validatedUid = null;
     }
   }
-  Future<void> signOut() async {
-    try { await _auth.signOut(); } finally { FirestoreSyncTracker.instance.reset(); }
-  }
+
   Future<void> waitForPendingWrites() => _trackWrite(_db.waitForPendingWrites());
   Future<String?> requestPasswordReset(String login) async =>
     'Parolni tiklash uchun administratorga murojaat qiling. Login haqiqiy email emas; shaxsni tekshirib operator tiklaydi.';
@@ -121,30 +154,51 @@ class FirebaseService {
       await u.updatePassword(newPassword); return null;
     } on FirebaseAuthException { return 'Parol yangilanmadi. Joriy parol va tarmoqni tekshiring.'; }
   }
-  /// Never authorize from cached grants or legacy users.role alone.
+  /// Authority is strict even when business records are displayed tolerantly.
   Future<AppUser?> fetchUser(String uid) async {
-    if (currentUid != uid) return null;
-    return _validatedUser(uid, await _access.doc(uid).get(_server));
-  }
-  Future<AppUser?> _validatedUser(String uid, DocumentSnapshot<Map<String,dynamic>> a) async {
-    final d = a.data(); final auth = _auth.currentUser;
-    if (d == null || auth?.uid != uid || a.metadata.isFromCache || a.metadata.hasPendingWrites) return null;
-    if (!['admin','coAdmin','member'].contains(d['role']) || !['active','pending','blocked'].contains(d['status'])) return null;
-    final cutoff = d['sessionValidAfter']; final token = await auth!.getIdTokenResult(); final authTime = token.authTime;
-    if (cutoff is! Timestamp || authTime == null || authTime.isBefore(cutoff.toDate())) return null;
-    final doc = await _users.doc(uid).get(_server); final data = doc.data();
-    if (data == null || data['role'] != d['role'] || data['status'] != d['status'] || data['sessionValidAfter'] != cutoff ||
-        !listEquals(data['boilerhouseIds'] as List?,d['boilerhouseIds'] as List?)) {
-      return null;
+    if (currentUid != uid) throw const AuthFlowException(AuthFailure.reauthenticationRequired);
+    final generation = _sessionGeneration;
+    try {
+      await _auth.currentUser!.getIdTokenResult(true);
+      final result = await _validatedUser(uid, await _access.doc(uid).get(_server));
+      if (generation != _sessionGeneration || currentUid != uid) {
+        throw const AuthFlowException(AuthFailure.reauthenticationRequired);
+      }
+      _validatedUid = uid;
+      return result;
+    } catch (_) {
+      _validatedUid = null;
+      rethrow;
     }
-    return _userFromDoc(doc);
   }
-  Stream<AppUser?> currentUserStream(String uid) =>
-    _access.doc(uid).snapshots(includeMetadataChanges:true).asyncMap((doc) async {
+
+  Future<AppUser> _validatedUser(String uid, DocumentSnapshot<Map<String,dynamic>> snapshot) async {
+    final auth = _auth.currentUser;
+    if (auth?.uid != uid || snapshot.metadata.isFromCache || snapshot.metadata.hasPendingWrites) {
+      throw const AuthFlowException(AuthFailure.network);
+    }
+    final access = AccountAccess.parse(snapshot.data());
+    access.checkSession((await auth!.getIdTokenResult()).authTime);
+    final profile = await _users.doc(uid).get(_server);
+    return access.validateProfile(uid, profile.data());
+  }
+
+  Stream<AppUser?> currentUserStream(String uid) {
+    final generation = _sessionGeneration;
+    return _access.doc(uid).snapshots(includeMetadataChanges:true).asyncMap((doc) async {
       FirestoreSyncTracker.instance.reportSnapshot(source:'current-user-$uid',isFromCache:doc.metadata.isFromCache,hasPendingWrites:doc.metadata.hasPendingWrites);
-      if (doc.metadata.isFromCache || doc.metadata.hasPendingWrites) return fetchUser(uid);
-      return _validatedUser(uid,doc);
+      try {
+        final user = doc.metadata.isFromCache || doc.metadata.hasPendingWrites
+            ? await fetchUser(uid)
+            : await _validatedUser(uid, doc);
+        if (generation != _sessionGeneration || currentUid != uid) return null;
+        return user;
+      } catch (_) {
+        _validatedUid = null;
+        rethrow;
+      }
     });
+  }
   Future<AppUser> _requireUser({bool manager=false,bool admin=false}) async {
     final uid = currentUid; final u = uid == null ? null : await fetchUser(uid);
     if (!SecurityPolicy.isActive(u) || (manager && !SecurityPolicy.isManager(u)) || (admin && u!.role != UserRole.admin)) {
@@ -155,9 +209,35 @@ class FirebaseService {
   Map<String,dynamic> _authority(Map<String,dynamic> d) => {'role':d['role'],'status':d['status'],'boilerhouseIds':d['boilerhouseIds'],'sessionValidAfter':d['sessionValidAfter']};
   Map<String,dynamic> _profile(Map<String,dynamic> d) => {for (final k in ['id','firstName','lastName','position','photoUrl','role','status']) k:d[k]};
   Stream<List<AppUser>> allUsersStream({AppUser? user}) {
-    if (!SecurityPolicy.isActive(user)) return Stream.value([]);
-    final Query<Map<String,dynamic>> q = SecurityPolicy.isManager(user) ? _directory.orderBy('createdAt') : _profiles.where('status',isEqualTo:'active');
-    return q.snapshots().map((s)=>s.docs.map(_userFromDoc).toList());
+    if (!SecurityPolicy.isActive(user) || user!.id != _validatedUid) return Stream.value([]);
+    final query = SecurityPolicy.isManager(user) ? _directory.orderBy('createdAt') : _profiles.where('status',isEqualTo:'active');
+    return _recordStream(query, _userFromDoc, source: 'directory');
+  }
+
+  Stream<List<T>> _recordStream<T>(Query<Map<String, dynamic>>? query,
+      T Function(DocumentSnapshot<Map<String, dynamic>>) mapper, {required String source}) async* {
+    if (query == null) { yield <T>[]; return; }
+    final generation = _sessionGeneration;
+    try {
+      await for (final snapshot in query.snapshots()) {
+        if (generation != _sessionGeneration || _validatedUid != currentUid) return;
+        final values = <T>[];
+        var invalid = 0;
+        for (final document in snapshot.docs) {
+          try {
+            final fields = DocumentFields(document.data());
+            if (fields.boolean('archived')) continue;
+            values.add(mapper(document));
+          } on FormatException {
+            invalid++;
+          }
+        }
+        DataQualityTracker.instance.record(source, invalid);
+        yield values;
+      }
+    } finally {
+      DataQualityTracker.instance.record(source, 0);
+    }
   }
   Future<void> _editUser(String uid, Map<String,dynamic> changes,{bool selfPosition=false}) async {
     final actor = await _requireUser(admin:!selfPosition);
@@ -180,17 +260,23 @@ class FirebaseService {
     await _editUser(uid,{'role':_roleToStr(role)});
   }
   Future<void> assignBoilerhouses(String uid,List<String> ids) async {
-    if (ids.length > 30 || ids.toSet().length != ids.length) throw ArgumentError('Ko‘pi bilan 30 ta takrorlanmas qozonxona');
+    if (ids.length > 30 || ids.toSet().length != ids.length ||
+        ids.any((id) => !RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(id))) {
+      throw ArgumentError('Ko‘pi bilan 30 ta takrorlanmas qozonxona');
+    }
     await _requireUser(admin:true);
-    for (final id in ids) { if (!(await _boilerhouses.doc(id).get(_server)).exists) throw ArgumentError('Qozonxona topilmadi'); }
+    if (ids.isNotEmpty) {
+      final snapshot = await _boilerhouses.where(FieldPath.documentId, whereIn: ids).get(_server);
+      if (snapshot.docs.length != ids.length || snapshot.docs.any((d) => d.data()['archived'] == true)) {
+        throw ArgumentError('Qozonxona topilmadi yoki arxivlangan');
+      }
+    }
     await _editUser(uid,{'boilerhouseIds':ids});
   }
   Future<void> updateUserPosition(String uid,String position) => _editUser(uid,{'position':position.trim()},selfPosition:uid == currentUid);
   Future<void> updateUserPhoto(String uid,String photoUrl) async => throw UnsupportedError('Fayl yuklash o‘chirilgan');
-  Future<void> saveFcmToken(String uid,String token) async => throw UnsupportedError('Spark rejimida server push mavjud emas');
-  Future<void> clearFcmToken(String uid) async {} // No client token collection exists.
   Query<Map<String,dynamic>>? _scope(CollectionReference<Map<String,dynamic>> col,AppUser? user,{bool documentIds=false}) {
-    if (!SecurityPolicy.isActive(user) || user!.id != currentUid) return null;
+    if (!SecurityPolicy.isActive(user) || user!.id != currentUid || user.id != _validatedUid) return null;
     if (SecurityPolicy.isManager(user)) return col;
     final ids = user.boilerhouseIds.toSet().toList();
     if (ids.isEmpty || ids.length > 30) return null;
@@ -199,23 +285,22 @@ class FirebaseService {
   Stream<List<T>> _scopedStream<T>(CollectionReference<Map<String,dynamic>> col,AppUser? user,
       T Function(DocumentSnapshot<Map<String,dynamic>>) mapper,{bool documentIds=false}) {
     final q = _scope(col,user,documentIds:documentIds);
-    return q == null ? Stream.value([]) : q.snapshots().map((s)=>s.docs.map(mapper).toList());
+    return _recordStream(q, mapper, source: col.path);
   }
   Stream<List<BoilerHouse>> boilerhousesStream({AppUser? user}) => _scopedStream(_boilerhouses,user,_boilerhouseFromDoc,documentIds:true);
   Stream<List<Equipment>> equipmentStream({AppUser? user}) => _scopedStream(_equipment,user,_equipmentFromDoc);
   Stream<List<Drawing>> drawingsStream({AppUser? user}) => _scopedStream(_drawings,user,_drawingFromDoc);
   Stream<List<Instruction>> instructionsStream({AppUser? user}) => !SecurityPolicy.isActive(user)
-    ? Stream.value([]) : _instructions.snapshots().map((s)=>s.docs.map(_instructionFromDoc).toList());
+    ? Stream.value([]) : _recordStream(_instructions, _instructionFromDoc, source: 'instructions');
   Stream<List<JournalEntry>> journalStream({AppUser? user}) {
     final q = _scope(_journal,user);
-    return q == null ? Stream.value([]) : q.where('deleted',isEqualTo:false).orderBy('eventDateTime',descending:true).limit(100)
-      .snapshots().map((s)=>s.docs.map(_entryFromDoc).toList());
+    return _recordStream(q?.where('deleted',isEqualTo:false).orderBy('eventDateTime',descending:true).limit(100), _entryFromDoc, source: 'journal');
   }
   Future<void> addJournalEntry(JournalEntry e) async {
     final u = await _requireUser();
     if (e.photoPaths.isNotEmpty) throw UnsupportedError('Fayl yuklash o‘chirilgan');
-    await _trackWrite(_journal.doc(e.id).set({..._entryToMap(e),'authorId':u.id,'authorName':u.fullName,
-      'createdAt':FieldValue.serverTimestamp(),'updatedAt':FieldValue.serverTimestamp(),'version':1,'historyId':'','deleted':false}));
+    await _create(_journal.doc(e.id), {..._entryToMap(e),'authorId':u.id,'authorName':u.fullName,
+      'createdAt':FieldValue.serverTimestamp(),'updatedAt':FieldValue.serverTimestamp(),'version':1,'historyId':'','deleted':false});
   }
   Future<void> updateJournalEntry(JournalEntry e) => _reviseJournal(e.id,entry:e);
   Future<void> deleteJournalEntry(String id) => _reviseJournal(id,deleted:true);
@@ -238,17 +323,29 @@ class FirebaseService {
   }
   Stream<List<AppNotification>> notificationsStream(String userId) {
     if (userId != currentUid) return Stream.value([]);
-    return _notifications.where('recipientId',isEqualTo:userId).orderBy('sentAt',descending:true).limit(100)
-      .snapshots().map((s)=>s.docs.map(_notifFromDoc).toList());
+    return _recordStream(_notifications.where('recipientId',isEqualTo:userId).orderBy('sentAt',descending:true).limit(100), _notifFromDoc, source: 'notifications');
   }
   Future<void> markNotificationRead(String id) => _trackWrite(_notifications.doc(id).update({'isRead':true}));
   Future<void> markAllNotificationsRead(String userId) async {
-    if (userId != currentUid) throw StateError('Ruxsat yo‘q');
-    while (true) {
-      final s = await _notifications.where('recipientId',isEqualTo:userId).where('isRead',isEqualTo:false).limit(100).get(_server);
-      if (s.docs.isEmpty) return;
-      final batch = _db.batch(); for (final d in s.docs) { batch.update(d.reference,{'isRead':true}); }
-      await _trackWrite(batch.commit());
+    if (userId != currentUid || userId != _validatedUid) throw StateError('Ruxsat yo‘q');
+    // Snapshot a finite set: new arrivals do not extend this operation forever.
+    final snapshot = await _notifications.where('recipientId',isEqualTo:userId)
+        .where('isRead',isEqualTo:false).limit(1001).get(_server).timeout(const Duration(seconds: 20));
+    final rows = snapshot.docs.take(1000).toList();
+    final tasks = <Future<void> Function()>[];
+    for (var start = 0; start < rows.length; start += 100) {
+      final chunk = rows.skip(start).take(100).toList();
+      tasks.add(() {
+        if (currentUid != userId || _validatedUid != userId) throw StateError('Session changed');
+        final batch = _db.batch();
+        for (final row in chunk) { batch.update(row.reference, {'isRead': true}); }
+        return _trackWrite(batch.commit());
+      });
+    }
+    final result = await runBoundedBatches(tasks, concurrency: 2);
+    if (!result.complete || snapshot.docs.length > 1000) {
+      throw PartialOperationException(BatchResult(completed: result.completed,
+          failed: result.failed + (snapshot.docs.length > 1000 ? 1 : 0), uncertain: result.uncertain));
     }
   }
   Future<void> broadcastNotification({required String title,required String message}) async {
@@ -259,72 +356,113 @@ class FirebaseService {
     await sendNotification(title:title,message:message,recipientIds:snap.docs.map((d)=>d.id).toList());
   }
   Future<void> sendNotification({required String title,required String message,required List<String> recipientIds}) async {
-    final u = await _requireUser(manager:true);
-    if (recipientIds.isEmpty || recipientIds.length > 100 || recipientIds.toSet().length != recipientIds.length) throw ArgumentError('1–100 ta takrorlanmas oluvchi talab qilinadi');
-    if (title.trim().isEmpty || title.length > 200 || message.trim().isEmpty || message.length > 4000) throw ArgumentError('Xabar matni noto‘g‘ri');
-    // One recipient per document; <=8 distinct recipient access lookups per batch.
-    for (var i=0;i<recipientIds.length;i+=8) {
-      final batch = _db.batch();
-      for (final uid in recipientIds.skip(i).take(8)) {
-        batch.set(_notifications.doc(),{'recipientId':uid,'senderId':u.id,'type':'important','title':title,'message':message,
-          'isRead':false,'createdAt':FieldValue.serverTimestamp(),'sentAt':FieldValue.serverTimestamp()});
-      }
-      await _trackWrite(batch.commit());
+    final user = await _requireUser(manager:true);
+    if (recipientIds.isEmpty || recipientIds.length > 100 || recipientIds.toSet().length != recipientIds.length) {
+      throw ArgumentError('1–100 ta takrorlanmas oluvchi talab qilinadi');
     }
+    if (title.trim().isEmpty || title.length > 200 || message.trim().isEmpty || message.length > 4000) {
+      throw ArgumentError('Xabar matni noto‘g‘ri');
+    }
+    final targets = {for (final uid in recipientIds) uid: _notifications.doc()};
+    final tasks = <Future<void> Function()>[];
+    // Eight recipients keep each commit within the Rules document-read budget.
+    for (var i = 0; i < recipientIds.length; i += 8) {
+      final chunk = recipientIds.skip(i).take(8).toList();
+      tasks.add(() {
+        if (currentUid != user.id || _validatedUid != user.id) throw StateError('Session changed');
+        final batch = _db.batch();
+        for (final uid in chunk) {
+          batch.set(targets[uid]!, {'recipientId':uid,'senderId':user.id,'type':'important',
+            'title':title,'message':message,'isRead':false,
+            'createdAt':FieldValue.serverTimestamp(),'sentAt':FieldValue.serverTimestamp()});
+        }
+        return _trackWrite(batch.commit());
+      });
+    }
+    final result = await runBoundedBatches(tasks);
+    if (!result.complete) throw PartialOperationException(result);
   }
-  Future<void> addBoilerhouse(BoilerHouse b) => _trackWrite(_boilerhouses.doc(b.id).set(_boilerhouseToMap(b)));
+  Future<void> _create(DocumentReference<Map<String, dynamic>> reference, Map<String, dynamic> data) async {
+    await _requireUser();
+    await _trackWrite(_db.runTransaction((transaction) async {
+      final existing = await transaction.get(reference);
+      if (existing.exists) {
+        throw StateError('Yozuv allaqachon mavjud. Ro‘yxatni yangilang; mavjud yozuv qayta yozilmadi.');
+      }
+      transaction.set(reference, data);
+    }));
+  }
+
+  Future<void> _archive(DocumentReference<Map<String, dynamic>> reference) async {
+    final user = await _requireUser(admin: true);
+    await _trackWrite(_db.runTransaction((transaction) async {
+      final snapshot = await transaction.get(reference);
+      if (!snapshot.exists) throw StateError('Yozuv topilmadi');
+      final before = snapshot.data()!;
+      if (before['archived'] == true) return;
+      transaction.update(reference, {
+        'archived': true,
+        'archivedAt': FieldValue.serverTimestamp(),
+        'archivedBy': user.id,
+      });
+      transaction.set(reference.collection('history').doc('archive'), {
+        'collection': reference.parent.id,
+        'documentId': reference.id,
+        'actorId': user.id,
+        'createdAt': FieldValue.serverTimestamp(),
+        'before': before,
+      });
+    }));
+  }
+
+  Future<void> addBoilerhouse(BoilerHouse b) => _create(_boilerhouses.doc(b.id), _boilerhouseToMap(b));
   Future<void> updateBoilerhouse(BoilerHouse b) => _trackWrite(_boilerhouses.doc(b.id).update(_boilerhouseToMap(b)));
-  Future<void> deleteBoilerhouse(String id) => _trackWrite(_boilerhouses.doc(id).delete());
-  Future<void> addEquipment(Equipment e) => _trackWrite(_equipment.doc(e.id).set(_equipmentToMap(e)));
+  Future<void> deleteBoilerhouse(String id) => _archive(_boilerhouses.doc(id));
+  Future<void> addEquipment(Equipment e) => _create(_equipment.doc(e.id), _equipmentToMap(e));
   Future<void> updateEquipment(Equipment e) => _trackWrite(_equipment.doc(e.id).update(_equipmentToMap(e)));
-  Future<void> deleteEquipment(String id) => _trackWrite(_equipment.doc(id).delete());
+  Future<void> deleteEquipment(String id) => _archive(_equipment.doc(id));
   Future<void> addInstruction(Instruction i) async {
     final u = await _requireUser(manager:true);
-    await _trackWrite(_instructions.doc(i.id).set({..._instructionToMap(i),'authorId':u.id,
-      'createdAt':FieldValue.serverTimestamp(),'updatedAt':FieldValue.serverTimestamp()}));
+    await _create(_instructions.doc(i.id), {..._instructionToMap(i),'authorId':u.id,
+      'createdAt':FieldValue.serverTimestamp(),'updatedAt':FieldValue.serverTimestamp()});
   }
   Future<void> updateInstruction(Instruction i) => _trackWrite(_instructions.doc(i.id).update({..._instructionToMap(i),'updatedAt':FieldValue.serverTimestamp()}));
-  Future<void> deleteInstruction(String id) => _trackWrite(_instructions.doc(id).delete());
+  Future<void> deleteInstruction(String id) => _archive(_instructions.doc(id));
   void _validateDrawing(Drawing d) {
-    if (d.filePath.isNotEmpty && !SecurityPolicy.isBundledDrawing(d.filePath)) throw ArgumentError('Faqat tasdiqlangan ilova sxemalari ruxsat etilgan');
+    if (d.filePath.isNotEmpty) throw ArgumentError('Maxfiy fayllar uchun operator migratsiyasi kerak');
   }
   Future<void> addDrawing(Drawing d) async {
     _validateDrawing(d); final u = await _requireUser(manager:true);
-    await _trackWrite(_drawings.doc(d.id).set({..._drawingToMap(d),'authorId':u.id,'addedAt':FieldValue.serverTimestamp()}));
+    await _create(_drawings.doc(d.id), {..._drawingToMap(d),'authorId':u.id,'addedAt':FieldValue.serverTimestamp()});
   }
   Future<void> updateDrawing(Drawing d) async { _validateDrawing(d); await _trackWrite(_drawings.doc(d.id).update(_drawingToMap(d))); }
-  Future<void> deleteDrawing(String id) => _trackWrite(_drawings.doc(id).delete());
-  Stream<List<ChangeLogEntry>> changeLogsStream(String boilerHouseId) => _changeLogs.where('boilerHouseId',isEqualTo:boilerHouseId)
-    .orderBy('createdAt',descending:true).limit(50).snapshots().map((s)=>s.docs.map(_changeLogFromDoc).toList());
+  Future<void> deleteDrawing(String id) => _archive(_drawings.doc(id));
+  Stream<List<ChangeLogEntry>> changeLogsStream(String boilerHouseId) => _recordStream(_changeLogs.where('boilerHouseId',isEqualTo:boilerHouseId)
+    .orderBy('createdAt',descending:true).limit(50), _changeLogFromDoc, source: 'changeLogs-$boilerHouseId');
   Future<void> addChangeLog(ChangeLogEntry e) async {
     final u = await _requireUser();
     if (e.photoUrls.isNotEmpty) throw UnsupportedError('Fayl yuklash o‘chirilgan');
-    await _trackWrite(_changeLogs.doc(e.id).set({..._changeLogToMap(e),'authorId':u.id,'authorName':u.fullName,'createdAt':FieldValue.serverTimestamp()}));
+    await _create(_changeLogs.doc(e.id), {..._changeLogToMap(e),'authorId':u.id,'authorName':u.fullName,'createdAt':FieldValue.serverTimestamp()});
   }
-  Future<void> deleteChangeLog(String id) async => throw UnsupportedError('Tarix o‘chirilmaydi; tuzatish yozuvini qo‘shing');
-  Stream<List<ChangeLogReaction>> reactionsStream(String id) => _changeLogs.doc(id).collection('reactions').orderBy('createdAt')
-    .snapshots().map((s)=>s.docs.map(_reactionFromDoc).toList());
+  Stream<List<ChangeLogReaction>> reactionsStream(String id) => _recordStream(_changeLogs.doc(id).collection('reactions').orderBy('createdAt').limit(200), _reactionFromDoc, source: 'reactions-$id');
   Future<void> addReaction(ChangeLogReaction r) async {
     final u = await _requireUser();
-    await _trackWrite(_changeLogs.doc(r.changeLogId).collection('reactions').doc(r.id).set({
-      ..._reactionToMap(r),'authorId':u.id,'authorName':u.fullName,'createdAt':FieldValue.serverTimestamp()}));
+    await _create(_changeLogs.doc(r.changeLogId).collection('reactions').doc(r.id), {
+      ..._reactionToMap(r),'authorId':u.id,'authorName':u.fullName,'createdAt':FieldValue.serverTimestamp()});
   }
-  Future<void> deleteReaction(String id,String reactionId) async => throw UnsupportedError('Tarix o‘chirilmaydi; tuzatish izohini qo‘shing');
-  Future<String> uploadFile({required File file,required String folder}) async => throw UnsupportedError('Fayl yuklash o‘chirilgan. Maxfiy fayllar uchun operatorga murojaat qiling.');
-  Future<List<String>> uploadFiles({required List<File> files,required String folder}) async => throw UnsupportedError('Fayl yuklash o‘chirilgan');
   Stream<List<Shift>> shiftsStream({required DateTime from,required DateTime to,AppUser? user}) {
     final q = _scope(_shifts,user);
-    return q == null ? Stream.value([]) : q.where('date',isGreaterThanOrEqualTo:Timestamp.fromDate(from))
-      .where('date',isLessThan:Timestamp.fromDate(to)).orderBy('date').snapshots().map((s)=>s.docs.map(_shiftFromDoc).toList());
+    return _recordStream(q?.where('date',isGreaterThanOrEqualTo:Timestamp.fromDate(from))
+      .where('date',isLessThan:Timestamp.fromDate(to)).orderBy('date'), _shiftFromDoc, source: 'shifts');
   }
   Future<void> addShift(Shift s) async {
     final u = await _requireUser(manager:true);
-    await _trackWrite(_shifts.doc(s.id).set({..._shiftToMap(s),'createdBy':u.id,'createdAt':FieldValue.serverTimestamp()}));
+    await _create(_shifts.doc(s.id), {..._shiftToMap(s),'createdBy':u.id,'createdAt':FieldValue.serverTimestamp()});
   }
   Future<void> updateShift(Shift s) => _trackWrite(_shifts.doc(s.id).update(_shiftToMap(s)));
-  Future<void> deleteShift(String id) => _trackWrite(_shifts.doc(id).delete());
+  Future<void> deleteShift(String id) => _archive(_shifts.doc(id));
   AppUser _userFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('users', doc.id, doc.data());
     return AppUser(
       id: doc.id,
       login: d['login'] ?? '',
@@ -340,7 +478,7 @@ class FirebaseService {
   }
 
   JournalEntry _entryFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('journal', doc.id, doc.data());
     return JournalEntry(
       id: doc.id,
       boilerHouseId: d['boilerHouseId'] ?? '',
@@ -374,7 +512,7 @@ class FirebaseService {
       };
 
   AppNotification _notifFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('notifications', doc.id, doc.data());
     return AppNotification(
       id: doc.id,
       type: _notifTypeFromStr(d['type'] ?? 'informational'),
@@ -388,7 +526,7 @@ class FirebaseService {
   }
 
   BoilerHouse _boilerhouseFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('boilerhouses', doc.id, doc.data());
     return BoilerHouse(
       id: doc.id,
       name: d['name'] ?? '',
@@ -443,7 +581,7 @@ class FirebaseService {
       };
 
   Equipment _equipmentFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('equipment', doc.id, doc.data());
     return Equipment(
       id: doc.id,
       boilerHouseId: d['boilerHouseId'] ?? '',
@@ -482,7 +620,7 @@ class FirebaseService {
       };
 
   Instruction _instructionFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('instructions', doc.id, doc.data());
     return Instruction(
       id: doc.id,
       title: d['title'] ?? '',
@@ -509,7 +647,7 @@ class FirebaseService {
       };
 
   Drawing _drawingFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('drawings', doc.id, doc.data());
     return Drawing(
       id: doc.id,
       title: d['title'] ?? '',
@@ -537,7 +675,7 @@ class FirebaseService {
 
   // ChangeLog mappers
   ChangeLogEntry _changeLogFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('changeLogs', doc.id, doc.data());
     return ChangeLogEntry(
       id: doc.id,
       boilerHouseId: d['boilerHouseId'] ?? '',
@@ -561,7 +699,7 @@ class FirebaseService {
       };
 
   ChangeLogReaction _reactionFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('reactions', doc.id, doc.data());
     return ChangeLogReaction(
       id: doc.id,
       changeLogId: d['changeLogId'] ?? '',
@@ -705,7 +843,7 @@ class FirebaseService {
   }
 
   Shift _shiftFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('shifts', doc.id, doc.data());
     return Shift(
       id: doc.id,
       boilerHouseId: d['boilerHouseId'] ?? '',
@@ -735,23 +873,12 @@ class FirebaseService {
   // ═══ Audit Log ═══════════════════════════════════════════════════════════
 
 
-  Future<void> logAudit(AuditEntry e) => _trackWrite(_auditLog.doc(e.id).set({
-    'userId': e.userId,
-    'userName': e.userName,
-    'action': e.action.name,
-    'targetType': e.targetType,
-    'targetId': e.targetId,
-    'targetName': e.targetName,
-    'createdAt': FieldValue.serverTimestamp(),
-  }));
-
   Stream<List<AuditEntry>> auditLogStream() {
-    return _auditLog.orderBy('createdAt', descending: true).limit(200)
-        .snapshots().map((s) => s.docs.map(_auditFromDoc).toList());
+    return _recordStream(_auditLog.orderBy('createdAt', descending: true).limit(200), _auditFromDoc, source: 'audit');
   }
 
   AuditEntry _auditFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
-    final d = doc.data()!;
+    final d = BusinessDocumentCodec.read('audit_log', doc.id, doc.data());
     return AuditEntry(
       id: doc.id,
       userId: d['userId'] ?? '',

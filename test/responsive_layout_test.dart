@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:khorazm_issiklik_manbai_app/src/core/app_settings.dart';
 import 'package:khorazm_issiklik_manbai_app/src/core/app_state.dart';
 import 'package:khorazm_issiklik_manbai_app/src/core/app_theme.dart';
 import 'package:khorazm_issiklik_manbai_app/src/core/glass.dart';
@@ -34,7 +35,11 @@ void main() {
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
-              selectedLanguageProvider.overrideWith((ref) => 'uz_latin'),
+              selectedLanguageProvider.overrideWith((ref) => PersistedSetting<String>(
+                initialValue: 'uz_latin',
+                load: () async => null,
+                save: (_) async => true,
+              )),
             ],
             child: MaterialApp(
               theme: AppTheme.lightTheme,
@@ -61,7 +66,11 @@ void main() {
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
-              selectedLanguageProvider.overrideWith((ref) => 'uz_latin'),
+              selectedLanguageProvider.overrideWith((ref) => PersistedSetting<String>(
+                initialValue: 'uz_latin',
+                load: () async => null,
+                save: (_) async => true,
+              )),
             ],
             child: MaterialApp(
               theme: AppTheme.lightTheme,
