@@ -44,3 +44,7 @@ APK: `build/issiqlik-taminoti-v1.2.1-7-release.apk` (58.0 MB), versionName 1.2.1
 APK SHA256: `3F6EF28CD471A03097C7C369C7E92ADADB65303C06EC56183638F154162B2818`.
 
 The first-admin bootstrap requirement is unchanged: use `tools/operator.cjs` (documented in `security/README.md`) — registration still always creates `member/pending`.
+
+Deployment note: the repository rules changed for archive flows (new `archived*` keys and `history/archive` receipts plus scoped `get` paths). The previously deployed production rules predate this and will reject archive writes, so operators must publish the updated `firestore.rules`/indexes in the planned rollout before relying on archive in production.
+
+CI note: all GitHub Actions jobs in this repository have failed instantly with zero steps (also before this push, e.g. the 2026-11-07 10:37 run); the workflow YAML parses clean locally, so this is a repository/runner-level enablement or billing condition only the owner can clear.
