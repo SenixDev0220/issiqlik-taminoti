@@ -25,7 +25,7 @@ class WorkersScreen extends ConsumerWidget {
       title: l.workersTitle,
       leading: BackButton(onPressed: () => context.go('/home')),
       body: sorted.isEmpty
-          ? const Center(child: CircularProgressIndicator())
+          ? Center(child: Text(l.workersTitle))
           : ListView.builder(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               itemCount: sorted.length,
@@ -86,16 +86,7 @@ class _WorkerCard extends StatelessWidget {
           CircleAvatar(
             radius: 24,
             backgroundColor: roleColor.withValues(alpha: 0.14),
-            backgroundImage: user.photoUrl.isNotEmpty
-                ? ResizeImage(
-                    NetworkImage(user.photoUrl),
-                    width: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
-                    height: (48 * MediaQuery.devicePixelRatioOf(context)).round(),
-                  )
-                : null,
-            child: user.photoUrl.isEmpty
-                ? Text(user.initials, style: TextStyle(fontWeight: FontWeight.bold, color: roleColor, fontSize: 14))
-                : null,
+            child: Text(user.initials, style: TextStyle(fontWeight: FontWeight.bold, color: roleColor, fontSize: 14)),
           ),
           const SizedBox(width: 12),
 
@@ -116,12 +107,14 @@ class _WorkerCard extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
+                const SizedBox(height: 4),
+                StatusChip(label: roleLabel, color: roleColor),
               ],
             ),
           ),
           const SizedBox(width: 8),
 
-          StatusChip(label: roleLabel, color: roleColor),
+
         ],
       ),
     );

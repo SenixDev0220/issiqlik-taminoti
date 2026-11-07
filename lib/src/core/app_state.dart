@@ -16,16 +16,24 @@ final currentUserProvider = StateProvider<AppUser?>((ref) => null);
 
 /// Keeps currentUserProvider in sync when Firestore role/status changes.
 final currentUserSyncProvider = StreamProvider<AppUser?>((ref) {
-  final user = ref.watch(currentUserProvider);
-  if (user == null) return Stream.value(null);
+  final uid = ref.watch(currentUserProvider.select((u) => u?.id));
+  if (uid == null) return Stream.value(null);
+  var disposed = false;
   ref.onDispose(() {
-    FirestoreSyncTracker.instance.removeSnapshot('current-user-${user.id}');
+    disposed = true;
+    FirestoreSyncTracker.instance.removeSnapshot('current-user-$uid');
   });
-  return _fb.currentUserStream(user.id).map((updated) {
-    if (updated != null) {
-      ref.read(currentUserProvider.notifier).state = updated;
+  return _fb.currentUserStream(uid).map((updated) {
+    if (!disposed && ref.read(currentUserProvider)?.id == uid) {
+      ref.read(currentUserProvider.notifier).state =
+          updated?.status == UserStatus.active ? updated : null;
     }
     return updated;
+  }).handleError((Object error, StackTrace stack) {
+    if (!disposed && ref.read(currentUserProvider)?.id == uid) {
+      ref.read(currentUserProvider.notifier).state = null;
+    }
+    FirestoreSyncTracker.instance.reportFailure(error, stack);
   });
 });
 
@@ -33,12 +41,12 @@ final selectedLanguageProvider = StateProvider<String>((ref) => 'uz_cyrl');
 final darkModeProvider = StateProvider<bool>((ref) => false);
 
 final allUsersStreamProvider = StreamProvider<List<AppUser>>((ref) {
-  return _fb.allUsersStream();
+  return _fb.allUsersStream(user: ref.watch(currentUserProvider));
 });
 
 /// All users list (for stats / admin).
 final userStoreProvider = Provider<List<AppUser>>((ref) {
-  return ref.watch(allUsersStreamProvider).valueOrNull ?? [];
+  return ref.watch(allUsersStreamProvider).asData?.value ?? [];
 });
 
 final activeUsersProvider = Provider<List<AppUser>>((ref) {
@@ -50,9 +58,9 @@ final pendingUsersProvider = Provider<List<AppUser>>((ref) {
 });
 
 class _UserActions {
-  void approveUser(String uid) => _fb.approveUser(uid);
-  void declineUser(String uid) => _fb.declineUser(uid);
-  void changeRole(String uid, UserRole role) => _fb.changeRole(uid, role);
+  Future<void> approveUser(String uid) => _fb.approveUser(uid);
+  Future<void> declineUser(String uid) => _fb.declineUser(uid);
+  Future<void> changeRole(String uid, UserRole role) => _fb.changeRole(uid, role);
 }
 
 final _userActionsInstance = _UserActions();
@@ -60,24 +68,26 @@ final _userActionsInstance = _UserActions();
 final userStoreNotifierProvider = Provider<_UserActions>((_) => _userActionsInstance);
 
 final journalStreamProvider = StreamProvider<List<JournalEntry>>((ref) {
-  return _fb.journalStream();
+  return _fb.journalStream(user: ref.watch(currentUserProvider));
 });
 
 /// Flat list — used by journal_providers.dart and journal_screen.dart.
 final journalStoreProvider = Provider<List<JournalEntry>>((ref) {
-  return ref.watch(journalStreamProvider).valueOrNull ?? [];
+  return ref.watch(journalStreamProvider).asData?.value ?? [];
 });
 
 class _JournalActions {
-  void addEntry(JournalEntry e) => _fb.addJournalEntry(e);
-  void updateEntry(JournalEntry e) => _fb.updateJournalEntry(e);
-  void deleteEntry(String id) => _fb.deleteJournalEntry(id);
+  Future<void> addEntry(JournalEntry e) => _fb.addJournalEntry(e);
+  Future<void> updateEntry(JournalEntry e) => _fb.updateJournalEntry(e);
+  Future<void> deleteEntry(String id) => _fb.deleteJournalEntry(id);
 }
 
 final _journalActionsInstance = _JournalActions();
 final journalStoreNotifierProvider = Provider<_JournalActions>((_) => _journalActionsInstance);
 
 final notificationsStreamProvider = StreamProvider.family<List<AppNotification>, String>((ref, userId) {
+  final user = ref.watch(currentUserProvider);
+  if (user?.id != userId || user?.status != UserStatus.active) return Stream.value([]);
   return _fb.notificationsStream(userId);
 });
 
@@ -91,8 +101,8 @@ final unreadCountProvider = Provider.family<int, String>((ref, userId) {
 });
 
 class _NotifActions {
-  void markRead(String id) => _fb.markNotificationRead(id);
-  void markAllRead(String userId) => _fb.markAllNotificationsRead(userId);
+  Future<void> markRead(String id) => _fb.markNotificationRead(id);
+  Future<void> markAllRead(String userId) => _fb.markAllNotificationsRead(userId);
 }
 
 final _notifActionsInstance = _NotifActions();

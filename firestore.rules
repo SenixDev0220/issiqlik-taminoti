@@ -1,130 +1,223 @@
 rules_version = '2';
 service cloud.firestore {
-  match /databases/{database}/documents {
-
-    // ── Helper functions ─────────────────────────────────────────────────────
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-
-    function getUserData() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-
-    function isAdmin() {
-      return isAuthenticated() && getUserData().role == 'admin';
-    }
-
-    function isAdminOrCoAdmin() {
-      return isAuthenticated() && getUserData().role in ['admin', 'coAdmin'];
-    }
-
-    function isActiveUser() {
-      return isAuthenticated() && getUserData().status == 'active';
-    }
-
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
-
-    // ── Users ────────────────────────────────────────────────────────────────
-    match /users/{userId} {
-      // Anyone authenticated can read user profiles (needed for workers list)
-      allow read: if isAuthenticated();
-      // Users can only be created during registration (auth uid must match doc id)
-      allow create: if isOwner(userId);
-      // Users can update their own non-role/status fields; admins can update anything
-      allow update: if isAdmin()
-        || (isOwner(userId)
-            && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status']));
-      // Admins can delete anyone; users can delete their own account
-      allow delete: if isAdmin() || isOwner(userId);
-    }
-
-    // ── Boilerhouses ─────────────────────────────────────────────────────────
-    match /boilerhouses/{docId} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdminOrCoAdmin();
-    }
-
-    // ── Equipment ────────────────────────────────────────────────────────────
-    match /equipment/{docId} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdminOrCoAdmin();
-    }
-
-    // ── Journal ──────────────────────────────────────────────────────────────
-    match /journal/{docId} {
-      allow read: if isActiveUser();
-      // Active users can create entries (authorId must match)
-      allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
-      // Author or admin can update/delete
-      allow update: if isActiveUser()
-        && (resource.data.authorId == request.auth.uid || isAdminOrCoAdmin());
-      allow delete: if isAdminOrCoAdmin() || resource.data.authorId == request.auth.uid;
-    }
-
-    // ── Instructions ─────────────────────────────────────────────────────────
-    match /instructions/{docId} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdminOrCoAdmin();
-    }
-
-    // ── Drawings ─────────────────────────────────────────────────────────────
-    match /drawings/{docId} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdminOrCoAdmin();
-    }
-
-    // ── Notifications ────────────────────────────────────────────────────────
-    match /notifications/{docId} {
-      // Users can read notifications targeted to them or broadcast (empty recipientIds)
-      allow read: if isAuthenticated();
-      // Admins/co-admins can create any notification. System notifications
-      // may also come from pending users (registration notice) and from the
-      // unauthenticated forgot-password screen (reset request). Active users
-      // create informational ones (e.g. "new journal entry").
-      allow create: if isAdminOrCoAdmin()
-        || request.resource.data.type == 'system'
-        || (isActiveUser() && request.resource.data.type == 'informational');
-      // Users can mark their own notifications as read
-      allow update: if isAuthenticated()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
-      allow delete: if isAdmin();
-    }
-
-    // ── ChangeLogs ───────────────────────────────────────────────────────────
-    match /changeLogs/{docId} {
-      allow read: if isActiveUser();
-      allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
-      allow delete: if isAdminOrCoAdmin() || resource.data.authorId == request.auth.uid;
-
-      match /reactions/{reactionId} {
-        allow read: if isActiveUser();
-        allow create: if isActiveUser() && request.resource.data.authorId == request.auth.uid;
-        allow delete: if isAdminOrCoAdmin() || resource.data.authorId == request.auth.uid;
-      }
-    }
-
-    // ── Shifts (operator duty schedule) ──────────────────────────────────────
-    match /shifts/{docId} {
-      allow read: if isActiveUser();
-      allow create, update, delete: if isAdminOrCoAdmin();
-    }
-
-    // ── Audit log ────────────────────────────────────────────────────────────
-    match /audit_log/{docId} {
-      allow read, create: if isAdminOrCoAdmin();
-    }
-
-    // ── Password resets (admin-initiated) ────────────────────────────────────
-    match /passwordResets/{docId} {
-      allow read, write: if isAdmin();
-    }
-
-    // ── Deny everything else ─────────────────────────────────────────────────
-    match /{document=**} {
-      allow read, write: if false;
+ match /databases/{database}/documents {
+  function own(uid) { return request.auth != null && request.auth.uid == uid; }
+  function access() { return get(/databases/$(database)/documents/access/$(request.auth.uid)).data; }
+  function active() { return request.auth != null && access().status == 'active' && request.auth.token.auth_time * 1000 >= access().sessionValidAfter.toMillis(); }
+  function admin() { return active() && access().role == 'admin'; }
+  function manager() { return active() && access().role in ['admin','coAdmin']; }
+  function scoped(h) { return active() && (manager() || h in access().boilerhouseIds); }
+  function text(v,n) { return v is string && v.size() <= n; }
+  function filled(v,n) { return text(v,n) && v.size() > 0; }
+  function num(v) { return v is number && v >= 0 && v <= 1000000000000; }
+  function house(id) { return filled(id,128) && exists(/databases/$(database)/documents/boilerhouses/$(id)); }
+  function idAt(a,i) { return a.size() <= i || (a[i] is string && a[i].matches('^[A-Za-z0-9_-]{1,128}$')); }
+  function ids(a) { return a is list && a.size() <= 30 && a.toSet().size() == a.size()
+    && idAt(a,0) && idAt(a,1) && idAt(a,2) && idAt(a,3) && idAt(a,4) && idAt(a,5) && idAt(a,6) && idAt(a,7) && idAt(a,8) && idAt(a,9)
+    && idAt(a,10) && idAt(a,11) && idAt(a,12) && idAt(a,13) && idAt(a,14) && idAt(a,15) && idAt(a,16) && idAt(a,17) && idAt(a,18) && idAt(a,19)
+    && idAt(a,20) && idAt(a,21) && idAt(a,22) && idAt(a,23) && idAt(a,24) && idAt(a,25) && idAt(a,26) && idAt(a,27) && idAt(a,28) && idAt(a,29); }
+  function authority(d) { return {'role':d.role,'status':d.status,'boilerhouseIds':d.boilerhouseIds,'sessionValidAfter':d.sessionValidAfter}; }
+  function profile(d) { return {'id':d.id,'firstName':d.firstName,'lastName':d.lastName,'position':d.position,'photoUrl':d.photoUrl,'role':d.role,'status':d.status}; }
+  function userValid(d,uid) { return d.keys().hasAll(['id','login','firstName','lastName','phone','position','photoUrl','role','status','boilerhouseIds','sessionValidAfter','createdAt'])
+    && d.keys().hasOnly(['id','login','firstName','lastName','phone','position','photoUrl','role','status','boilerhouseIds','sessionValidAfter','createdAt'])
+    && d.id == uid && d.login is string && d.login.matches('^[a-z0-9._-]{3,40}$') && filled(d.firstName,80) && filled(d.lastName,80)
+    && d.phone is string && d.phone.matches('^[+][1-9][0-9]{8,14}$') && text(d.position,120) && d.photoUrl == '' && d.createdAt is timestamp
+    && d.role in ['admin','coAdmin','member'] && d.status in ['active','pending','blocked'] && ids(d.boilerhouseIds) && d.sessionValidAfter is timestamp; }
+  function mirrors(uid,d) { return getAfter(/databases/$(database)/documents/users/$(uid)).data == d
+    && getAfter(/databases/$(database)/documents/employeeDirectory/$(uid)).data == d
+    && getAfter(/databases/$(database)/documents/userProfiles/$(uid)).data == profile(d)
+    && getAfter(/databases/$(database)/documents/access/$(uid)).data == authority(d); }
+  function registration(uid,d) { return own(uid)
+    && !exists(/databases/$(database)/documents/access/$(uid))
+    && !exists(/databases/$(database)/documents/users/$(uid))
+    && !exists(/databases/$(database)/documents/employeeDirectory/$(uid))
+    && !exists(/databases/$(database)/documents/userProfiles/$(uid)) && userValid(d,uid)
+    && d.role == 'member' && d.status == 'pending' && d.position == '' && d.boilerhouseIds == []
+    && d.sessionValidAfter == timestamp.value(0) && d.createdAt == request.time
+    && request.auth.token.email == d.login + '@khorazm-issiklik.app'
+    && getAfter(/databases/$(database)/documents/phoneClaims/$(d.phone)).data.uid == uid && mirrors(uid,d); }
+  function editUser(uid,b,a) { return userValid(a,uid) && mirrors(uid,a)
+    && a.diff(b).affectedKeys().hasOnly(['position','role','status','boilerhouseIds','sessionValidAfter'])
+    && ((own(uid) && active() && a.diff(b).affectedKeys().hasOnly(['position']))
+      || (admin() && !own(uid) && b.role != 'admin' && a.role != 'admin'
+        && (a.sessionValidAfter == b.sessionValidAfter || a.sessionValidAfter == request.time)
+        && (!(a.status == 'blocked' && b.status != 'blocked') || a.sessionValidAfter == request.time))); }
+  match /users/{uid} {
+    allow get: if own(uid);
+    allow create: if registration(uid,request.resource.data);
+    allow update: if editUser(uid,resource.data,request.resource.data);
+  }
+  match /access/{uid} {
+    allow get: if own(uid) || manager();
+    allow list: if manager();
+    allow create: if registration(uid,getAfter(/databases/$(database)/documents/users/$(uid)).data);
+    allow update: if admin() && !own(uid) && resource.data.role != 'admin' && request.resource.data.role != 'admin'
+      && editUser(uid,get(/databases/$(database)/documents/employeeDirectory/$(uid)).data,getAfter(/databases/$(database)/documents/users/$(uid)).data);
+  }
+  match /employeeDirectory/{uid} {
+    allow read: if manager();
+    allow create: if registration(uid,request.resource.data);
+    allow update: if editUser(uid,resource.data,request.resource.data);
+  }
+  match /userProfiles/{uid} {
+    allow read: if active() && resource.data.status == 'active';
+    allow create: if registration(uid,getAfter(/databases/$(database)/documents/users/$(uid)).data);
+    allow update: if editUser(uid,get(/databases/$(database)/documents/employeeDirectory/$(uid)).data,getAfter(/databases/$(database)/documents/users/$(uid)).data);
+  }
+  match /phoneClaims/{phone} {
+    allow create: if request.auth != null && request.resource.data.keys().hasAll(['uid','createdAt']) && request.resource.data.keys().hasOnly(['uid','createdAt'])
+      && request.resource.data.uid == request.auth.uid && request.resource.data.createdAt == request.time
+      && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.phone == phone
+      && registration(request.auth.uid,getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data);
+  }
+  function boilerValid(d,id) {
+    return d.keys().hasAll(['id','name','district','address','yearBuilt','modernizationYear','totalArea','workersCount','operatorsCount','installedCapacity','connectedLoad','consumers','pipelineLength','dispatchPhone','annualElectricity','annualWater','annualGas','annualHeatProduction','aboveGroundPipeline','belowGroundPipeline','defects','locationUrl','status'])
+      && d.keys().hasOnly(['id','name','district','address','yearBuilt','modernizationYear','totalArea','workersCount','operatorsCount','installedCapacity','connectedLoad','consumers','pipelineLength','dispatchPhone','annualElectricity','annualWater','annualGas','annualHeatProduction','aboveGroundPipeline','belowGroundPipeline','defects','locationUrl','status'])
+      && d.id == id && filled(d.name,160) && text(d.district,120) && text(d.address,500)
+      && d.yearBuilt is int && d.yearBuilt >= 0 && d.yearBuilt <= 2200 && d.modernizationYear is int && d.modernizationYear >= 0 && d.modernizationYear <= 2200
+      && d.workersCount is int && num(d.workersCount) && d.operatorsCount is int && num(d.operatorsCount)
+      && num(d.totalArea) && num(d.installedCapacity) && num(d.connectedLoad) && num(d.pipelineLength)
+      && num(d.annualElectricity) && num(d.annualWater) && num(d.annualGas) && num(d.annualHeatProduction) && num(d.aboveGroundPipeline) && num(d.belowGroundPipeline)
+      && text(d.consumers,2000) && text(d.dispatchPhone,40) && text(d.defects,4000)
+      && text(d.locationUrl,500) && (d.locationUrl == '' || d.locationUrl.matches('^https://(maps[.]google[.]com|www[.]google[.]com/maps|maps[.]app[.]goo[.]gl|yandex[.]uz/maps|yandex[.]com/maps)/.*$'))
+      && d.status in ['operating','maintenance','emergencyShutdown','mothballed'];
+  }
+  match /boilerhouses/{id} {
+    allow read: if scoped(id);
+    allow create, update: if manager() && boilerValid(request.resource.data,id);
+    allow delete: if manager();
+  }
+  function responsible(uid,h) {
+    let a = get(/databases/$(database)/documents/access/$(uid)).data;
+    return a.status == 'active' && (a.role in ['admin','coAdmin'] || h in a.boilerhouseIds);
+  }
+  function equipmentValid(d,id) {
+    return d.keys().hasAll(['id','boilerHouseId','type','name','model','manufacturer','serialNumber','inventoryNumber','productionDate','installedDate','status','lastServiceDate','nextServiceDate','responsiblePersonId','notes'])
+      && d.keys().hasOnly(['id','boilerHouseId','type','name','model','manufacturer','serialNumber','inventoryNumber','productionDate','installedDate','status','lastServiceDate','nextServiceDate','responsiblePersonId','notes'])
+      && d.id == id && house(d.boilerHouseId) && d.type in ['boiler','pump','heatExchanger','burner','expansionTank','other']
+      && filled(d.name,160) && text(d.model,160) && text(d.manufacturer,160) && text(d.serialNumber,120) && text(d.inventoryNumber,120)
+      && d.productionDate is timestamp && d.installedDate is timestamp && d.lastServiceDate is timestamp && d.nextServiceDate is timestamp
+      && d.status in ['operating','standby','maintenance','decommissioned'] && text(d.notes,4000)
+      && text(d.responsiblePersonId,128) && (d.responsiblePersonId == '' || responsible(d.responsiblePersonId,d.boilerHouseId));
+  }
+  match /equipment/{id} {
+    allow read: if scoped(resource.data.boilerHouseId);
+    allow create, update: if manager() && equipmentValid(request.resource.data,id);
+    allow delete: if manager();
+  }
+  function authorName() {
+    let p = get(/databases/$(database)/documents/userProfiles/$(request.auth.uid)).data;
+    return p.firstName + ' ' + p.lastName;
+  }
+  function journalValid(d) {
+    return d.keys().hasAll(['boilerHouseId','equipmentId','eventDateTime','category','title','description','importance','status','authorId','authorName','createdAt','updatedAt','version','historyId','deleted'])
+      && d.keys().hasOnly(['boilerHouseId','equipmentId','eventDateTime','category','title','description','importance','status','authorId','authorName','createdAt','updatedAt','version','historyId','deleted'])
+      && house(d.boilerHouseId) && (d.equipmentId == null || (filled(d.equipmentId,128) && get(/databases/$(database)/documents/equipment/$(d.equipmentId)).data.boilerHouseId == d.boilerHouseId))
+      && d.eventDateTime is timestamp && text(d.category,120) && filled(d.title,200) && text(d.description,10000)
+      && d.importance in ['normal','important','critical'] && d.status in ['open','inProgress','closed']
+      && filled(d.authorId,128) && text(d.authorName,161) && d.createdAt is timestamp && d.updatedAt == request.time
+      && d.version is int && d.version >= 1 && text(d.historyId,128) && d.deleted is bool;
+  }
+  function journalEditor(d) { return scoped(d.boilerHouseId) && (manager() || d.authorId == request.auth.uid); }
+  function historyValid(h,id,hid,b,a) {
+    return h.keys().hasAll(['journalId','boilerHouseId','actorId','createdAt','operation','before','version'])
+      && h.keys().hasOnly(['journalId','boilerHouseId','actorId','createdAt','operation','before','version'])
+      && h.journalId == id && h.boilerHouseId == b.boilerHouseId && h.actorId == request.auth.uid
+      && h.createdAt == request.time && h.before == b && h.version == a.version
+      && h.operation == (a.deleted ? 'delete' : 'update') && a.historyId == hid;
+  }
+  match /journal/{id} {
+    allow read: if scoped(resource.data.boilerHouseId);
+    allow create: if scoped(request.resource.data.boilerHouseId) && journalValid(request.resource.data)
+      && request.resource.data.authorId == request.auth.uid && request.resource.data.authorName == authorName()
+      && request.resource.data.createdAt == request.time && request.resource.data.version == 1 && request.resource.data.historyId == '' && request.resource.data.deleted == false;
+    allow update: if journalEditor(resource.data) && !resource.data.deleted && journalValid(request.resource.data)
+      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['category','title','description','importance','status','updatedAt','version','historyId','deleted'])
+      && request.resource.data.version == resource.data.version + 1 && filled(request.resource.data.historyId,128)
+      && !exists(/databases/$(database)/documents/journal/$(id)/history/$(request.resource.data.historyId))
+      && historyValid(getAfter(/databases/$(database)/documents/journal/$(id)/history/$(request.resource.data.historyId)).data,id,request.resource.data.historyId,resource.data,request.resource.data);
+    match /history/{hid} {
+      allow read: if scoped(resource.data.boilerHouseId);
+      allow create: if journalEditor(get(/databases/$(database)/documents/journal/$(id)).data)
+        && getAfter(/databases/$(database)/documents/journal/$(id)).data.version == get(/databases/$(database)/documents/journal/$(id)).data.version + 1
+        && historyValid(request.resource.data,id,hid,get(/databases/$(database)/documents/journal/$(id)).data,getAfter(/databases/$(database)/documents/journal/$(id)).data);
     }
   }
+  function instructionValid(d,id) {
+    return d.keys().hasAll(['id','title','category','body','version','createdAt','updatedAt','authorId','urgency'])
+      && d.keys().hasOnly(['id','title','category','body','version','createdAt','updatedAt','authorId','urgency'])
+      && d.id == id && filled(d.title,200) && text(d.category,120) && text(d.body,100000) && filled(d.version,40)
+      && d.createdAt is timestamp && d.updatedAt == request.time && filled(d.authorId,128) && d.urgency in ['normal','mandatory'];
+  }
+  match /instructions/{id} {
+    allow read: if active();
+    allow create: if manager() && instructionValid(request.resource.data,id) && request.resource.data.authorId == request.auth.uid && request.resource.data.createdAt == request.time;
+    allow update: if manager() && instructionValid(request.resource.data,id) && request.resource.data.authorId == resource.data.authorId && request.resource.data.createdAt == resource.data.createdAt;
+    allow delete: if manager();
+  }
+  function bundledFile(p) {
+    return p == '' || p in ['assets/schemas/bogot.jpg','assets/schemas/gurlan.jpg','assets/schemas/khazarasp.jpg','assets/schemas/khiva.jpg','assets/schemas/kushkupir.jpg','assets/schemas/shovot.jpg','assets/schemas/tuprokkala.jpg','assets/schemas/urgench_shahar.jpg','assets/schemas/urgench_tuman.jpg','assets/schemas/yangiariq.jpg','assets/schemas/yangibozor.jpg'];
+  }
+  function drawingValid(d,id) {
+    return d.keys().hasAll(['id','title','number','category','description','boilerHouseId','filePath','authorId','addedAt'])
+      && d.keys().hasOnly(['id','title','number','category','description','boilerHouseId','filePath','authorId','addedAt'])
+      && d.id == id && filled(d.title,200) && text(d.number,120) && text(d.category,120) && text(d.description,4000)
+      && house(d.boilerHouseId) && bundledFile(d.filePath) && filled(d.authorId,128) && d.addedAt is timestamp;
+  }
+  match /drawings/{id} {
+    allow read: if scoped(resource.data.boilerHouseId);
+    allow create: if manager() && drawingValid(request.resource.data,id) && request.resource.data.authorId == request.auth.uid && request.resource.data.addedAt == request.time;
+    allow update: if manager() && drawingValid(request.resource.data,id) && request.resource.data.authorId == resource.data.authorId && request.resource.data.addedAt == resource.data.addedAt;
+    allow delete: if manager();
+  }
+  match /notifications/{id} {
+    allow read: if active() && resource.data.recipientId == request.auth.uid;
+    allow create: if manager() && request.resource.data.keys().hasAll(['recipientId','senderId','type','title','message','isRead','createdAt','sentAt'])
+      && request.resource.data.keys().hasOnly(['recipientId','senderId','type','title','message','isRead','createdAt','sentAt'])
+      && filled(request.resource.data.recipientId,128) && get(/databases/$(database)/documents/access/$(request.resource.data.recipientId)).data.status == 'active'
+      && request.resource.data.senderId == request.auth.uid && request.resource.data.type in ['informational','important','emergency']
+      && filled(request.resource.data.title,200) && filled(request.resource.data.message,4000) && request.resource.data.isRead == false
+      && request.resource.data.createdAt == request.time && request.resource.data.sentAt == request.time;
+    allow update: if active() && resource.data.recipientId == request.auth.uid && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']) && request.resource.data.isRead == true;
+  }
+  match /changeLogs/{id} {
+    allow read: if scoped(resource.data.boilerHouseId);
+    allow create: if scoped(request.resource.data.boilerHouseId) && house(request.resource.data.boilerHouseId)
+      && request.resource.data.keys().hasAll(['boilerHouseId','title','text','photoUrls','authorId','authorName','createdAt'])
+      && request.resource.data.keys().hasOnly(['boilerHouseId','title','text','photoUrls','authorId','authorName','createdAt'])
+      && filled(request.resource.data.title,200) && text(request.resource.data.text,10000) && request.resource.data.photoUrls == []
+      && request.resource.data.authorId == request.auth.uid && request.resource.data.authorName == authorName() && request.resource.data.createdAt == request.time;
+    match /reactions/{rid} {
+      allow read: if scoped(get(/databases/$(database)/documents/changeLogs/$(id)).data.boilerHouseId);
+      allow create: if scoped(get(/databases/$(database)/documents/changeLogs/$(id)).data.boilerHouseId)
+        && request.resource.data.keys().hasAll(['changeLogId','text','authorId','authorName','createdAt']) && request.resource.data.keys().hasOnly(['changeLogId','text','authorId','authorName','createdAt'])
+        && request.resource.data.changeLogId == id && filled(request.resource.data.text,4000) && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.authorName == authorName() && request.resource.data.createdAt == request.time;
+    }
+  }
+  function shiftValid(d) {
+    return d.keys().hasAll(['boilerHouseId','boilerHouseName','operatorId','operatorName','date','type','note','createdBy','createdAt'])
+      && d.keys().hasOnly(['boilerHouseId','boilerHouseName','operatorId','operatorName','date','type','note','createdBy','createdAt'])
+      && house(d.boilerHouseId) && d.boilerHouseName == get(/databases/$(database)/documents/boilerhouses/$(d.boilerHouseId)).data.name
+      && filled(d.operatorId,128) && responsible(d.operatorId,d.boilerHouseId)
+      && d.operatorName == get(/databases/$(database)/documents/userProfiles/$(d.operatorId)).data.firstName + ' ' + get(/databases/$(database)/documents/userProfiles/$(d.operatorId)).data.lastName
+      && d.date is timestamp && d.type in ['day','night'] && text(d.note,4000) && filled(d.createdBy,128) && d.createdAt is timestamp;
+  }
+  match /shifts/{id} {
+    allow read: if scoped(resource.data.boilerHouseId);
+    allow create: if manager() && shiftValid(request.resource.data) && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time;
+    allow update: if manager() && shiftValid(request.resource.data) && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.createdAt == resource.data.createdAt;
+    allow delete: if manager();
+  }
+  // Client-reported activity, not authoritative server audit. Journal history above is atomic.
+  match /audit_log/{id} {
+    allow read: if manager();
+    allow create: if manager() && request.resource.data.keys().hasAll(['userId','userName','action','targetType','targetId','targetName','createdAt'])
+      && request.resource.data.keys().hasOnly(['userId','userName','action','targetType','targetId','targetName','createdAt'])
+      && request.resource.data.userId == request.auth.uid && request.resource.data.userName == authorName()
+      && request.resource.data.action in ['add','edit','delete','approve','decline','ban','unban','changeRole','resetPassword']
+      && text(request.resource.data.targetType,80) && text(request.resource.data.targetId,128) && text(request.resource.data.targetName,200) && request.resource.data.createdAt == request.time;
+  }
+  match /{document=**} { allow read, write: if false; }
+ }
 }

@@ -1,5 +1,3 @@
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -11,9 +9,78 @@ import 'firestore_sync_tracker.dart';
 
 /// Extra scroll padding so content is not hidden behind [GlassBottomNav].
 const double kBottomNavSpace = 110;
+const double kMaxScreenContentWidth = 760;
 
-/// Mint gradient backdrop with soft teal glow blobs. Wrap every screen in it
-/// (via [GlassScaffold]) so translucent surfaces read as glass.
+/// Keep controls readable rather than shrinking the user's chosen text size.
+/// The children retain their natural height; unlike aspect-ratio grids this
+/// also works with translated labels, validation errors and large text.
+class ResponsiveWrap extends StatelessWidget {
+  const ResponsiveWrap({
+    super.key,
+    required this.children,
+    this.minChildWidth = 200,
+    this.maxColumns = 2,
+    this.spacing = 12,
+  });
+
+  final List<Widget> children;
+  final double minChildWidth;
+  final int maxColumns;
+  final double spacing;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final textScale = MediaQuery.textScalerOf(context).scale(14) / 14;
+      final columns = ((constraints.maxWidth + spacing) /
+              (minChildWidth * textScale.clamp(1.0, 2.0) + spacing))
+          .floor()
+          .clamp(1, maxColumns);
+      final width = (constraints.maxWidth - spacing * (columns - 1)) / columns;
+      return Wrap(
+        spacing: spacing,
+        runSpacing: spacing,
+        children: [for (final child in children) SizedBox(width: width, child: child)],
+      );
+    },
+  );
+}
+
+bool _reduceMotion(BuildContext context) =>
+    MediaQuery.disableAnimationsOf(context) ||
+    MediaQuery.accessibleNavigationOf(context) ||
+    !TickerMode.valuesOf(context).enabled;
+
+/// Await the server before closing forms or reporting success. Duplicate taps
+/// on the same mounted surface are ignored; backend errors are never displayed
+/// verbatim (they may contain identifiers or transport details).
+final _pendingUiActions = <BuildContext>{};
+
+Future<bool> runUiAction(
+  BuildContext context,
+  WidgetRef ref,
+  Future<void> Function() action,
+) async {
+  if (!_pendingUiActions.add(context)) return false;
+  try {
+    await action();
+    return context.mounted;
+  } catch (error) {
+    if (context.mounted) {
+      final l = AppL10n.of(ref.read(selectedLanguageProvider));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(error is UnsupportedError ? l.operatorAssistance : l.syncError),
+      ));
+    }
+    return false;
+  } finally {
+    // Removing an identity key does not access a disposed context.
+    // ignore: use_build_context_synchronously
+    _pendingUiActions.remove(context);
+  }
+}
+
+/// Cool aurora backdrop; static gradients keep glass surfaces cheap to paint.
 class AppBackground extends StatelessWidget {
   const AppBackground({super.key, required this.child});
 
@@ -29,14 +96,30 @@ class AppBackground extends StatelessWidget {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Color(0xFFF1FAF7), Color(0xFFDCEFE9), Color(0xFFC3E3DA)],
+                colors: [
+                  Color(0xFFF7F8FE),
+                  Color(0xFFE9EDFC),
+                  Color(0xFFDCE8F8),
+                ],
               ),
             ),
           ),
         ),
-        Positioned(top: -90, right: -70, child: _blob(260, const Color(0xFF5EC6B4))),
-        Positioned(top: 190, left: -110, child: _blob(240, const Color(0xFF8FD8CA))),
-        Positioned(bottom: -60, right: -40, child: _blob(220, const Color(0xFF5EC6B4))),
+        Positioned(
+          top: -90,
+          right: -70,
+          child: _blob(280, const Color(0xFF7B8DF0)),
+        ),
+        Positioned(
+          top: 190,
+          left: -110,
+          child: _blob(250, const Color(0xFF72D7E8)),
+        ),
+        Positioned(
+          bottom: -60,
+          right: -40,
+          child: _blob(240, const Color(0xFF9C9AF2)),
+        ),
         child,
       ],
     );
@@ -50,7 +133,7 @@ class AppBackground extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           gradient: RadialGradient(
-            colors: [color.withValues(alpha: 0.30), color.withValues(alpha: 0)],
+            colors: [color.withValues(alpha: 0.26), color.withValues(alpha: 0)],
           ),
         ),
       ),
@@ -58,16 +141,14 @@ class AppBackground extends StatelessWidget {
   }
 }
 
-/// Frosted glass card. The backdrop is a static gradient, so real blur is
-/// unnecessary for cards — translucent white + hairline border reads the same
-/// and stays cheap in long lists.
-class GlassCard extends StatelessWidget {
+/// Frosted glass card with a lightweight highlight instead of per-frame blur.
+class GlassCard extends StatefulWidget {
   const GlassCard({
     super.key,
     required this.child,
     this.padding = const EdgeInsets.all(16),
     this.margin,
-    this.radius = 22,
+    this.radius = 24,
     this.onTap,
     this.onLongPress,
     this.tint,
@@ -84,27 +165,71 @@ class GlassCard extends StatelessWidget {
   final Color? tint;
 
   @override
+  State<GlassCard> createState() => _GlassCardState();
+}
+
+class _GlassCardState extends State<GlassCard> {
+  bool _pressed = false;
+
+  @override
   Widget build(BuildContext context) {
     final shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(radius),
+      borderRadius: BorderRadius.circular(widget.radius),
       side: const BorderSide(color: AppTheme.glassBorder, width: 1),
     );
     return Container(
-      margin: margin,
+      margin: widget.margin,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(radius),
+        borderRadius: BorderRadius.circular(widget.radius),
         boxShadow: const [
-          BoxShadow(color: Color(0x141B5E55), blurRadius: 24, offset: Offset(0, 10)),
+          BoxShadow(
+            color: Color(0x104658D8),
+            blurRadius: 20,
+            offset: Offset(0, 8),
+          ),
         ],
       ),
-      child: Material(
-        color: tint == null ? AppTheme.glassFill : Color.alphaBlend(tint!.withValues(alpha: 0.10), AppTheme.glassFill),
-        shape: shape,
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          onLongPress: onLongPress,
-          child: Padding(padding: padding, child: child),
+      child: RepaintBoundary(
+        child: AnimatedScale(
+          scale:
+              !_reduceMotion(context) &&
+                  _pressed && (widget.onTap != null || widget.onLongPress != null)
+              ? 0.985
+              : 1,
+          duration: _reduceMotion(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 240),
+          curve: Curves.elasticOut,
+          child: Material(
+            color: widget.tint == null
+                ? AppTheme.glassFill
+                : Color.alphaBlend(
+                    widget.tint!.withValues(alpha: 0.10),
+                    AppTheme.glassFill,
+                  ),
+            shape: shape,
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: widget.onTap,
+              onLongPress: widget.onLongPress,
+              onHighlightChanged: (pressed) {
+                if (_pressed != pressed) setState(() => _pressed = pressed);
+              },
+              child: Ink(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withValues(alpha: 0.24),
+                      Colors.white.withValues(alpha: 0.02),
+                    ],
+                  ),
+                ),
+                child: Padding(padding: widget.padding, child: widget.child),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -113,7 +238,12 @@ class GlassCard extends StatelessWidget {
 
 /// Rounded-square tinted icon plate used at the start of list cards.
 class GlassIconTile extends StatelessWidget {
-  const GlassIconTile({super.key, required this.icon, this.color = AppTheme.primary, this.size = 46});
+  const GlassIconTile({
+    super.key,
+    required this.icon,
+    this.color = AppTheme.primary,
+    this.size = 46,
+  });
 
   final IconData icon;
   final Color color;
@@ -125,9 +255,9 @@ class GlassIconTile extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
+        color: color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(size * 0.32),
-        border: Border.all(color: color.withValues(alpha: 0.18)),
+        border: Border.all(color: color.withValues(alpha: 0.20)),
       ),
       child: Icon(icon, color: color, size: size * 0.5),
     );
@@ -137,7 +267,12 @@ class GlassIconTile extends StatelessWidget {
 /// Pill status chip (Faol / Ogohlantirish / Nosoz...). Pass a dark-enough
 /// color: it is used for text, icon, and (faded) fill.
 class StatusChip extends StatelessWidget {
-  const StatusChip({super.key, required this.label, required this.color, this.icon});
+  const StatusChip({
+    super.key,
+    required this.label,
+    required this.color,
+    this.icon,
+  });
 
   final String label;
   final Color color;
@@ -159,7 +294,16 @@ class StatusChip extends StatelessWidget {
             Icon(icon, size: 12, color: color),
             const SizedBox(width: 4),
           ],
-          Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color)),
+          Flexible(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: color,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -168,7 +312,12 @@ class StatusChip extends StatelessWidget {
 
 /// Glass search pill.
 class GlassSearchField extends StatelessWidget {
-  const GlassSearchField({super.key, this.controller, this.hint, this.onChanged});
+  const GlassSearchField({
+    super.key,
+    this.controller,
+    this.hint,
+    this.onChanged,
+  });
 
   final TextEditingController? controller;
   final String? hint;
@@ -183,7 +332,10 @@ class GlassSearchField extends StatelessWidget {
       decoration: InputDecoration(
         hintText: hint,
         prefixIcon: const Icon(Icons.search_rounded),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 18,
+          vertical: 14,
+        ),
       ),
     );
   }
@@ -192,8 +344,10 @@ class GlassSearchField extends StatelessWidget {
 /// Top-level tabs shown in the floating bottom bar.
 enum AppTab { home, boilerhouses, journal, profile }
 
-/// Floating glass bottom navigation with a springy active-tab indicator.
-class GlassBottomNav extends ConsumerWidget {
+AppTab? _pendingNavTransitionFrom;
+
+/// Floating translucent navigation with a glass-inspired active-tab indicator.
+class GlassBottomNav extends ConsumerStatefulWidget {
   const GlassBottomNav({super.key, required this.current, this.onFab});
 
   final AppTab current;
@@ -202,26 +356,98 @@ class GlassBottomNav extends ConsumerWidget {
   final VoidCallback? onFab;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<GlassBottomNav> createState() => _GlassBottomNavState();
+}
+
+class _GlassBottomNavState extends ConsumerState<GlassBottomNav>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _indicatorController;
+  late final CurvedAnimation _indicatorAnimation;
+  late int _fromIndex;
+  late int _toIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _toIndex = _tabIndex(widget.current);
+    _fromIndex = _tabIndex(_pendingNavTransitionFrom ?? widget.current);
+    _pendingNavTransitionFrom = null;
+    _indicatorController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    );
+    _indicatorAnimation = CurvedAnimation(
+      parent: _indicatorController,
+      curve: Curves.elasticOut,
+    );
+    if (_fromIndex == _toIndex) {
+      _indicatorController.value = 1;
+    } else {
+      _indicatorController.forward();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_reduceMotion(context)) _indicatorController.value = 1;
+  }
+
+  @override
+  void didUpdateWidget(covariant GlassBottomNav oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final nextIndex = _tabIndex(widget.current);
+    if (nextIndex == _toIndex) return;
+    _fromIndex = _toIndex;
+    _toIndex = nextIndex;
+    if (_reduceMotion(context)) {
+      _indicatorController.value = 1;
+    } else {
+      _indicatorController.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _indicatorAnimation.dispose();
+    _indicatorController.dispose();
+    super.dispose();
+  }
+
+  int _tabIndex(AppTab tab) => switch (tab) {
+    AppTab.home => 0,
+    AppTab.boilerhouses => 1,
+    AppTab.journal => 2,
+    AppTab.profile => 3,
+  };
+
+  void _navigate(BuildContext context, String route) {
+    _pendingNavTransitionFrom = widget.current;
+    context.go(route);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final l = AppL10n.of(ref.watch(selectedLanguageProvider));
-    return Padding(
+    return Align(
+      heightFactor: 1,
+      alignment: Alignment.bottomCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: kMaxScreenContentWidth),
+        child: Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
       child: SafeArea(
         top: false,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(28),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: RepaintBoundary(
             child: Container(
-              height: 70,
+              height: 72,
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.72),
-                    Colors.white.withValues(alpha: 0.48),
-                  ],
+                  colors: [Color(0xEBFFFFFF), Color(0xCFFFFFFF)],
                 ),
                 borderRadius: BorderRadius.circular(28),
                 border: Border.all(color: Colors.white.withValues(alpha: 0.72)),
@@ -238,51 +464,90 @@ class GlassBottomNav extends ConsumerWidget {
                   const fabWidth = 68.0;
                   const indicatorWidth = 54.0;
                   final itemWidth = (constraints.maxWidth - fabWidth) / 4;
-                  final selectedIndex = switch (current) {
-                    AppTab.home => 0,
-                    AppTab.boilerhouses => 1,
-                    AppTab.journal => 2,
-                    AppTab.profile => 3,
-                  };
-                  final selectedLeft = selectedIndex < 2
-                      ? selectedIndex * itemWidth
-                      : 2 * itemWidth + fabWidth + (selectedIndex - 2) * itemWidth;
 
                   return Stack(
                     children: [
-                      AnimatedPositioned(
-                        duration: const Duration(milliseconds: 650),
-                        curve: Curves.elasticOut,
-                        left: selectedLeft + (itemWidth - indicatorWidth) / 2,
+                      Positioned(
+                        left: 0,
                         top: 10,
                         width: indicatorWidth,
                         height: 50,
-                        child: IgnorePointer(
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(22),
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  AppTheme.accent.withValues(alpha: 0.22),
-                                  AppTheme.primary.withValues(alpha: 0.10),
-                                ],
-                              ),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.72),
+                        child: AnimatedBuilder(
+                          animation: _indicatorAnimation,
+                          child: const IgnorePointer(
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.all(
+                                  Radius.circular(22),
+                                ),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    Color(0x5C20B8D2),
+                                    Color(0x384658D8),
+                                  ],
+                                ),
+                                border: Border.fromBorderSide(
+                                  BorderSide(color: Color(0xB8FFFFFF)),
+                                ),
                               ),
                             ),
                           ),
+                          builder: (context, child) {
+                            final fromLeft = _tabLeft(
+                              _fromIndex,
+                              itemWidth,
+                              fabWidth,
+                            );
+                            final toLeft = _tabLeft(
+                              _toIndex,
+                              itemWidth,
+                              fabWidth,
+                            );
+                            final left =
+                                fromLeft +
+                                (toLeft - fromLeft) *
+                                    _indicatorAnimation.value +
+                                (itemWidth - indicatorWidth) / 2;
+                            return Transform.translate(
+                              offset: Offset(left, 0),
+                              child: RepaintBoundary(child: child),
+                            );
+                          },
                         ),
                       ),
                       Row(
                         children: [
-                          _item(context, Icons.home_rounded, l.navHome, '/home', AppTab.home),
-                          _item(context, Icons.factory_outlined, l.navBoilerhouses, '/boilerhouses', AppTab.boilerhouses),
+                          _item(
+                            context,
+                            Icons.home_rounded,
+                            l.navHome,
+                            '/home',
+                            AppTab.home,
+                          ),
+                          _item(
+                            context,
+                            Icons.factory_outlined,
+                            l.navBoilerhouses,
+                            '/boilerhouses',
+                            AppTab.boilerhouses,
+                          ),
                           _fab(context),
-                          _item(context, Icons.menu_book_rounded, l.navJournal, '/journal', AppTab.journal),
-                          _item(context, Icons.person_rounded, l.navProfile, '/profile', AppTab.profile),
+                          _item(
+                            context,
+                            Icons.menu_book_rounded,
+                            l.navJournal,
+                            '/journal',
+                            AppTab.journal,
+                          ),
+                          _item(
+                            context,
+                            Icons.person_rounded,
+                            l.navProfile,
+                            '/profile',
+                            AppTab.profile,
+                          ),
                         ],
                       ),
                     ],
@@ -293,53 +558,76 @@ class GlassBottomNav extends ConsumerWidget {
           ),
         ),
       ),
-    );
-  }
-
-  Widget _item(BuildContext context, IconData icon, String label, String route, AppTab tab) {
-    final selected = tab == current;
-    final color = selected ? AppTheme.primary : const Color(0xFF5E7F7A);
-    return Expanded(
-      child: InkResponse(
-        onTap: selected ? null : () => context.go(route),
-        radius: 34,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AnimatedScale(
-              scale: selected ? 1.12 : 1,
-              duration: const Duration(milliseconds: 500),
-              curve: Curves.elasticOut,
-              child: Icon(icon, size: 24, color: color),
-            ),
-            const SizedBox(height: 3),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                    color: color,
-                  ),
-                ),
-              ),
-            ),
-          ],
         ),
       ),
     );
+  }
+
+  Widget _item(
+    BuildContext context,
+    IconData icon,
+    String label,
+    String route,
+    AppTab tab,
+  ) {
+    final selected = tab == widget.current;
+    final color = selected ? AppTheme.primary : AppTheme.inkFaint;
+    return Expanded(
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: label,
+        child: Tooltip(
+          message: label,
+          child: InkResponse(
+            onTap: selected ? null : () => _navigate(context, route),
+            radius: 34,
+            child: SizedBox.expand(
+              child: ExcludeSemantics(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(icon, size: 24, color: color),
+                    if (MediaQuery.textScalerOf(context).scale(10.5) <= 14) ...[
+                      const SizedBox(height: 3),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 2),
+                        child: Text(
+                          label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                            color: color,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  double _tabLeft(int index, double itemWidth, double fabWidth) {
+    if (index < 2) return index * itemWidth;
+    return 2 * itemWidth + fabWidth + (index - 2) * itemWidth;
   }
 
   Widget _fab(BuildContext context) {
     return SizedBox(
       width: 68,
       child: Center(
-        child: GestureDetector(
-          onTap: onFab ?? () => context.go('/journal'),
+        child: Semantics(
+          button: true,
+          label: AppL10n.of(ref.watch(selectedLanguageProvider)).navJournal,
+          child: GestureDetector(
+          onTap: widget.onFab ?? () => _navigate(context, '/journal'),
           child: Container(
             width: 52,
             height: 52,
@@ -359,6 +647,7 @@ class GlassBottomNav extends ConsumerWidget {
               ],
             ),
             child: const Icon(Icons.add_rounded, color: Colors.white, size: 28),
+          ),
           ),
         ),
       ),
@@ -408,9 +697,17 @@ class GlassScaffold extends ConsumerWidget {
         backgroundColor: Colors.transparent,
         extendBody: true,
         resizeToAvoidBottomInset: resizeToAvoidBottomInset,
-        appBar: appBar ??
+        appBar:
+            appBar ??
             ((title != null || titleWidget != null)
-                ? AppBar(title: titleWidget ?? Text(title!), actions: actions, leading: leading)
+                ? AppBar(
+                    toolbarHeight: 56 +
+                        (MediaQuery.textScalerOf(context).scale(20) - 20)
+                            .clamp(0.0, 24.0),
+                    title: titleWidget ?? Text(title!, maxLines: 2, overflow: TextOverflow.ellipsis),
+                    actions: actions,
+                    leading: leading,
+                  )
                 : null),
         body: Column(
           children: [
@@ -418,11 +715,26 @@ class GlassScaffold extends ConsumerWidget {
                 syncState.status != FirestoreSyncStatus.checking &&
                 syncState.status != FirestoreSyncStatus.synced)
               _FirestoreSyncBanner(state: syncState, l10n: language),
-            Expanded(child: body),
+            Expanded(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: kMaxScreenContentWidth,
+                  ),
+                  child: SafeArea(
+                    top: false,
+                    bottom: tab == null,
+                    child: body,
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
         floatingActionButton: floatingActionButton,
-        bottomNavigationBar: tab == null ? null : GlassBottomNav(current: tab!, onFab: onFab),
+        bottomNavigationBar: tab == null
+            ? null
+            : GlassBottomNav(current: tab!, onFab: onFab),
       ),
     );
   }
@@ -438,30 +750,26 @@ class _FirestoreSyncBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final (message, color, icon) = switch (state.status) {
       FirestoreSyncStatus.checking => (
-          l10n.syncChecking,
-          AppTheme.inkSoft,
-          Icons.sync,
-        ),
+        l10n.syncChecking,
+        AppTheme.inkSoft,
+        Icons.sync,
+      ),
       FirestoreSyncStatus.offline => (
-          l10n.syncOffline(state.pendingWrites),
-          AppTheme.warning,
-          Icons.cloud_off,
-        ),
+        l10n.syncOffline(state.pendingWrites),
+        AppTheme.warning,
+        Icons.cloud_off,
+      ),
       FirestoreSyncStatus.syncing => (
-          l10n.syncPending(state.pendingWrites),
-          AppTheme.primary,
-          Icons.cloud_sync,
-        ),
-      FirestoreSyncStatus.synced => (
-          '',
-          AppTheme.success,
-          Icons.cloud_done,
-        ),
+        l10n.syncPending(state.pendingWrites),
+        AppTheme.primary,
+        Icons.cloud_sync,
+      ),
+      FirestoreSyncStatus.synced => ('', AppTheme.success, Icons.cloud_done),
       FirestoreSyncStatus.error => (
-          l10n.syncError,
-          AppTheme.error,
-          Icons.error_outline,
-        ),
+        l10n.syncError,
+        AppTheme.error,
+        Icons.error_outline,
+      ),
     };
 
     return Material(

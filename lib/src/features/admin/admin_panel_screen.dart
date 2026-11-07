@@ -18,16 +18,6 @@ import '../instructions/instructions_providers.dart';
 
 final _fb = FirebaseService.instance;
 
-void _log(AppUser? user, AuditAction action, String targetType, String targetId, String targetName) {
-  if (user == null) return;
-  _fb.logAudit(AuditEntry(
-    id: 'audit-${DateTime.now().millisecondsSinceEpoch}',
-    userId: user.id, userName: user.fullName,
-    action: action, targetType: targetType, targetId: targetId, targetName: targetName,
-    createdAt: DateTime.now(),
-  ));
-}
-
 class AdminPanelScreen extends ConsumerStatefulWidget {
   const AdminPanelScreen({super.key});
   @override
@@ -112,6 +102,7 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
       StatefulBuilder(builder: (_, setSt) => Padding(
         padding: const EdgeInsets.only(top: 8, bottom: 16),
         child: DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: selectedDistrict,
           decoration: InputDecoration(labelText: '${l.formDistrict} *'),
           items: districts.map((d) => DropdownMenuItem(value: d, child: Text(d, style: const TextStyle(fontSize: 14)))).toList(),
@@ -120,15 +111,15 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
       )),
       _field(nameC, '${l.formName} *'),
       _field(addrC, l.formAddress),
-      Row(children: [Expanded(child: _field(yearC, l.fieldYearBuiltDetail, num: true)), const SizedBox(width: 8), Expanded(child: _field(modYearC, l.fieldModernization, num: true))]),
-      Row(children: [Expanded(child: _field(areaC, l.formArea, num: true)), const SizedBox(width: 8), Expanded(child: _field(workersC, l.fieldWorkers, num: true))]),
-      Row(children: [Expanded(child: _field(capC, l.formCapacity, num: true)), const SizedBox(width: 8), Expanded(child: _field(loadC, l.formLoad, num: true))]),
+      ResponsiveWrap(minChildWidth: 200, children: [_field(yearC, l.fieldYearBuiltDetail, num: true), _field(modYearC, l.fieldModernization, num: true)]),
+      ResponsiveWrap(minChildWidth: 200, children: [_field(areaC, l.formArea, num: true), _field(workersC, l.fieldWorkers, num: true)]),
+      ResponsiveWrap(minChildWidth: 200, children: [_field(capC, l.formCapacity, num: true), _field(loadC, l.formLoad, num: true)]),
       _field(consumersC, l.fieldConsumers),
-      Row(children: [Expanded(child: _field(pipeC, l.formPipeline, num: true)), const SizedBox(width: 8), Expanded(child: _field(phoneC, l.formPhone))]),
-      Row(children: [Expanded(child: _field(elecC, l.formElectricity, num: true)), const SizedBox(width: 8), Expanded(child: _field(gasC, l.formGas, num: true))]),
+      ResponsiveWrap(minChildWidth: 200, children: [_field(pipeC, l.formPipeline, num: true), _field(phoneC, l.formPhone)]),
+      ResponsiveWrap(minChildWidth: 200, children: [_field(elecC, l.formElectricity, num: true), _field(gasC, l.formGas, num: true)]),
       _field(heatC, l.formHeat, num: true),
       _field(locationC, l.formLocationUrl),
-    ], () {
+    ], () async {
       if (nameC.text.trim().isEmpty) return;
       final bh = BoilerHouse(
         id: existing?.id ?? 'bh-${DateTime.now().millisecondsSinceEpoch}',
@@ -148,10 +139,15 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
         annualGas: double.tryParse(gasC.text) ?? 0,
         annualHeatProduction: double.tryParse(heatC.text) ?? 0,
         locationUrl: locationC.text.trim(),
+        operatorsCount: existing?.operatorsCount ?? 0,
+        annualWater: existing?.annualWater ?? 0,
+        aboveGroundPipeline: existing?.aboveGroundPipeline ?? 0,
+        belowGroundPipeline: existing?.belowGroundPipeline ?? 0,
+        defects: existing?.defects ?? '',
+        status: existing?.status ?? BoilerHouseStatus.operating,
       );
-      isEdit ? _fb.updateBoilerhouse(bh) : _fb.addBoilerhouse(bh);
-      _log(ref.read(currentUserProvider), isEdit ? AuditAction.edit : AuditAction.add, 'boilerhouse', bh.id, bh.name);
-      Navigator.pop(ctx);
+      final saved = await runUiAction(ctx, ref, () => isEdit ? _fb.updateBoilerhouse(bh) : _fb.addBoilerhouse(bh));
+      if (saved && ctx.mounted) Navigator.pop(ctx);
     });
   }
 
@@ -168,7 +164,7 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
       _field(titleC, '${l.changeLogHeading} *'),
       _field(catC, l.formCategory),
       _field(bodyC, l.formText, lines: 5),
-    ], () {
+    ], () async {
       if (titleC.text.trim().isEmpty) return;
       final i = Instruction(
         id: existing?.id ?? 'instr-${DateTime.now().millisecondsSinceEpoch}',
@@ -179,10 +175,12 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
         createdAt: existing?.createdAt ?? DateTime.now(),
         updatedAt: DateTime.now(),
         authorId: existing?.authorId ?? '',
+        urgency: existing?.urgency ?? InstructionUrgency.normal,
+        boilerHouseIds: existing?.boilerHouseIds ?? const [],
+        equipmentTypes: existing?.equipmentTypes ?? const [],
       );
-      isEdit ? _fb.updateInstruction(i) : _fb.addInstruction(i);
-      _log(ref.read(currentUserProvider), isEdit ? AuditAction.edit : AuditAction.add, 'instruction', i.id, i.title);
-      Navigator.pop(ctx);
+      final saved = await runUiAction(ctx, ref, () => isEdit ? _fb.updateInstruction(i) : _fb.addInstruction(i));
+      if (saved && ctx.mounted) Navigator.pop(ctx);
     });
   }
 
@@ -194,29 +192,36 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
     final numC = TextEditingController(text: existing?.number ?? '');
     final catC = TextEditingController(text: existing?.category ?? '');
     final descC = TextEditingController(text: existing?.description ?? '');
+    String? houseId = existing?.boilerHouseId;
 
     final l = ref.read(l10nProvider);
     _showSheet(ctx, isEdit ? l.formEdit : l.formNewDrawing, [
+      StatefulBuilder(builder: (_, update) => DropdownButtonFormField<String>(
+        initialValue: ref.read(boilerHouseListProvider).any((h) => h.id == houseId) ? houseId : null,
+        isExpanded: true,
+        decoration: InputDecoration(labelText: l.navBoilerhouses),
+        items: ref.read(boilerHouseListProvider).map((h) => DropdownMenuItem(value: h.id, child: Text(h.name, maxLines: 2, overflow: TextOverflow.ellipsis))).toList(),
+        onChanged: (value) => update(() => houseId = value),
+      )),
       _field(titleC, '${l.changeLogHeading} *'),
       _field(numC, l.formNumber),
       _field(catC, l.formCategory),
       _field(descC, l.changeLogDescription, lines: 3),
-    ], () {
-      if (titleC.text.trim().isEmpty) return;
+    ], () async {
+      if (titleC.text.trim().isEmpty || houseId == null || houseId!.isEmpty) return;
       final d = Drawing(
         id: existing?.id ?? 'draw-${DateTime.now().millisecondsSinceEpoch}',
         title: titleC.text.trim(),
         number: numC.text.trim(),
         category: catC.text.trim(),
         description: descC.text.trim(),
-        boilerHouseId: existing?.boilerHouseId ?? '',
+        boilerHouseId: houseId!,
         filePath: existing?.filePath ?? '',
         authorId: existing?.authorId ?? '',
         addedAt: existing?.addedAt ?? DateTime.now(),
       );
-      isEdit ? _fb.updateDrawing(d) : _fb.addDrawing(d);
-      _log(ref.read(currentUserProvider), isEdit ? AuditAction.edit : AuditAction.add, 'drawing', d.id, d.title);
-      Navigator.pop(ctx);
+      final saved = await runUiAction(ctx, ref, () => isEdit ? _fb.updateDrawing(d) : _fb.addDrawing(d));
+      if (saved && ctx.mounted) Navigator.pop(ctx);
     });
   }
 
@@ -235,8 +240,10 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
   }
 
   void _showSheet(BuildContext ctx, String title, List<Widget> fields, VoidCallback onSave) {
-    showModalBottomSheet(context: ctx, isScrollControlled: true, useSafeArea: true, builder: (_) {
-      return DraggableScrollableSheet(
+    showModalBottomSheet(context: ctx, isScrollControlled: true, useSafeArea: true, builder: (sheetContext) {
+      return Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(sheetContext).bottom),
+        child: DraggableScrollableSheet(
         initialChildSize: 0.85,
         minChildSize: 0.5,
         maxChildSize: 0.95,
@@ -251,6 +258,7 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> with Single
             const SizedBox(height: 12),
             SizedBox(width: double.infinity, child: ElevatedButton(onPressed: onSave, child: Text(ref.read(l10nProvider).save))),
           ]),
+        ),
         ),
       );
     });
@@ -299,7 +307,7 @@ class _PendingTab extends ConsumerWidget {
                   style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
                   icon: const Icon(Icons.check_rounded, size: 18),
                   label: Text(l.adminApprove),
-                  onPressed: () { _fb.approveUser(u.id); _log(ref.read(currentUserProvider), AuditAction.approve, 'user', u.id, u.fullName); },
+                  onPressed: () => runUiAction(context, ref, () => _fb.approveUser(u.id)),
                 )),
                 const SizedBox(width: 10),
                 Expanded(child: OutlinedButton.icon(
@@ -310,7 +318,7 @@ class _PendingTab extends ConsumerWidget {
                   ),
                   icon: const Icon(Icons.close_rounded, size: 18),
                   label: Text(l.adminDecline),
-                  onPressed: () { _fb.declineUser(u.id); _log(ref.read(currentUserProvider), AuditAction.decline, 'user', u.id, u.fullName); },
+                  onPressed: () => runUiAction(context, ref, () => _fb.declineUser(u.id)),
                 )),
               ]),
             ],
@@ -350,11 +358,12 @@ class _UsersTab extends ConsumerWidget {
             Text('${u.login} • ${u.phone}', style: Theme.of(context).textTheme.bodySmall),
           ])),
           const SizedBox(width: 8),
-          isAdmin && !isSelf ? PopupMenuButton<String>(
+          isAdmin && !isSelf && u.role != UserRole.admin ? PopupMenuButton<String>(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             icon: const Icon(Icons.more_vert_rounded, color: AppTheme.inkSoft),
             itemBuilder: (_) => [
               if (!isBanned) ...[
+                PopupMenuItem(value: 'houses', child: Text(l.navBoilerhouses)),
                 PopupMenuItem(value: 'role', child: Row(children: [const Icon(Icons.swap_horiz, size: 18, color: AppTheme.primary), const SizedBox(width: 8), Text(l.adminChangeRole)])),
                 PopupMenuItem(value: 'resetpw', child: Row(children: [const Icon(Icons.lock_reset, size: 18, color: AppTheme.warning), const SizedBox(width: 8), Text(l.resetPassword, style: const TextStyle(color: AppTheme.warning))])),
                 PopupMenuItem(value: 'ban', child: Row(children: [const Icon(Icons.block, size: 18, color: AppTheme.error), const SizedBox(width: 8), Text(l.ban, style: const TextStyle(color: AppTheme.error))])),
@@ -362,10 +371,11 @@ class _UsersTab extends ConsumerWidget {
                 PopupMenuItem(value: 'unban', child: Row(children: [const Icon(Icons.check_circle_outline, size: 18, color: AppTheme.success), const SizedBox(width: 8), Text(l.unban, style: const TextStyle(color: AppTheme.success))])),
             ],
             onSelected: (v) {
-              if (v == 'role') { _showRolePicker(context, u, l); _log(ref.read(currentUserProvider), AuditAction.changeRole, 'user', u.id, u.fullName); }
+              if (v == 'houses') _showHousePicker(context, ref, u);
+              if (v == 'role') _showRolePicker(context, ref, u, l);
               if (v == 'resetpw') _showResetPassword(context, u, l);
-              if (v == 'ban') { _fb.banUser(u.id); _log(ref.read(currentUserProvider), AuditAction.ban, 'user', u.id, u.fullName); }
-              if (v == 'unban') { _fb.unbanUser(u.id); _log(ref.read(currentUserProvider), AuditAction.unban, 'user', u.id, u.fullName); }
+              if (v == 'ban') runUiAction(context, ref, () => _fb.banUser(u.id));
+              if (v == 'unban') runUiAction(context, ref, () => _fb.unbanUser(u.id));
             },
           ) : StatusChip(
             label: isBanned ? 'Banned' : _rl(u.role, l),
@@ -375,29 +385,43 @@ class _UsersTab extends ConsumerWidget {
       );
     });
   }
-  void _showRolePicker(BuildContext ctx, AppUser user, dynamic l) {
-    showDialog(context: ctx, builder: (_) => AlertDialog(title: Text(l.adminChangeRole), content: Column(mainAxisSize: MainAxisSize.min, children: UserRole.values.map((r) => ListTile(dense: true, leading: Icon(user.role == r ? Icons.radio_button_checked : Icons.radio_button_unchecked, color: user.role == r ? AppTheme.primary : AppTheme.inkFaint), title: Text(_rl(r, l)), onTap: () { _fb.changeRole(user.id, r); Navigator.pop(ctx); })).toList())));
+  void _showHousePicker(BuildContext ctx, WidgetRef ref, AppUser user) {
+    final selected = user.boilerhouseIds.toSet();
+    final houses = ref.read(boilerHouseListProvider);
+    final l = ref.read(l10nProvider);
+    showDialog(context: ctx, builder: (dialogContext) => StatefulBuilder(builder: (_, update) => AlertDialog(
+      title: Text('${l.navBoilerhouses} (${selected.length}/30)'),
+      content: SizedBox(width: 480, height: 360, child: ListView.builder(
+        itemCount: houses.length,
+        itemBuilder: (_, index) {
+          final h = houses[index];
+          return CheckboxListTile(
+            title: Text(h.name), value: selected.contains(h.id),
+            onChanged: selected.length >= 30 && !selected.contains(h.id) ? null : (value) => update(() {
+              if (value == true) { selected.add(h.id); } else { selected.remove(h.id); }
+            }),
+          );
+        },
+      )),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext), child: Text(l.cancel)),
+        TextButton(onPressed: () async {
+          if (await runUiAction(ctx, ref, () => _fb.assignBoilerhouses(user.id, selected.toList())) && dialogContext.mounted) {
+            Navigator.pop(dialogContext);
+          }
+        }, child: Text(l.save)),
+      ],
+    )));
+  }
+
+  void _showRolePicker(BuildContext ctx, WidgetRef ref, AppUser user, dynamic l) {
+    showDialog(context: ctx, builder: (_) => AlertDialog(title: Text(l.adminChangeRole), content: Column(mainAxisSize: MainAxisSize.min, children: UserRole.values.where((r) => r != UserRole.admin).map((r) => ListTile(dense: true, leading: Icon(user.role == r ? Icons.radio_button_checked : Icons.radio_button_unchecked, color: user.role == r ? AppTheme.primary : AppTheme.inkFaint), title: Text(_rl(r, l)), onTap: () async { if (await runUiAction(ctx, ref, () => _fb.changeRole(user.id, r)) && ctx.mounted) Navigator.pop(ctx); })).toList())));
   }
   void _showResetPassword(BuildContext ctx, AppUser user, dynamic l) {
-    final passCtrl = TextEditingController();
     showDialog(context: ctx, builder: (_) => AlertDialog(
       title: Text(user.fullName),
-      content: TextField(controller: passCtrl, decoration: InputDecoration(labelText: l.newPassword, prefixIcon: const Icon(Icons.lock_outline))),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
-        ElevatedButton(
-          onPressed: () async {
-            final pw = passCtrl.text.trim();
-            if (pw.length < 6) return;
-            await _fb.adminResetPassword(user.login, pw);
-            if (ctx.mounted) {
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text(l.passwordUpdated), backgroundColor: AppTheme.success));
-            }
-          },
-          child: Text(l.save),
-        ),
-      ],
+      content: Text(l.operatorAssistance),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel))],
     ));
   }
   Color _rc(UserRole r) { switch (r) { case UserRole.admin: return AppTheme.primary; case UserRole.coAdmin: return AppTheme.accent; case UserRole.member: return AppTheme.inkFaint; } }
@@ -460,7 +484,7 @@ class _BoilerhousesTab extends ConsumerWidget {
     final l = ref.read(l10nProvider);
     showDialog(context: ctx, builder: (_) => AlertDialog(
       title: Text(l.deleteConfirm), content: Text(name),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.no)), ElevatedButton(onPressed: () { _fb.deleteBoilerhouse(id); _log(ref.read(currentUserProvider), AuditAction.delete, 'boilerhouse', id, name); Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error), child: Text(l.yes))],
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.no)), ElevatedButton(onPressed: () async { if (await runUiAction(ctx, ref, () => _fb.deleteBoilerhouse(id)) && ctx.mounted) Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error), child: Text(l.yes))],
     ));
   }
 }
@@ -499,7 +523,7 @@ class _InstructionsTab extends ConsumerWidget {
     final l = ref.read(l10nProvider);
     showDialog(context: ctx, builder: (_) => AlertDialog(
       title: Text(l.deleteConfirm), content: Text(name),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.no)), ElevatedButton(onPressed: () { _fb.deleteInstruction(id); _log(ref.read(currentUserProvider), AuditAction.delete, 'instruction', id, name); Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error), child: Text(l.yes))],
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.no)), ElevatedButton(onPressed: () async { if (await runUiAction(ctx, ref, () => _fb.deleteInstruction(id)) && ctx.mounted) Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error), child: Text(l.yes))],
     ));
   }
 }
@@ -538,7 +562,7 @@ class _DrawingsTab extends ConsumerWidget {
     final l = ref.read(l10nProvider);
     showDialog(context: ctx, builder: (_) => AlertDialog(
       title: Text(l.deleteConfirm), content: Text(name),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.no)), ElevatedButton(onPressed: () { _fb.deleteDrawing(id); _log(ref.read(currentUserProvider), AuditAction.delete, 'drawing', id, name); Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error), child: Text(l.yes))],
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.no)), ElevatedButton(onPressed: () async { if (await runUiAction(ctx, ref, () => _fb.deleteDrawing(id)) && ctx.mounted) Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: AppTheme.error), child: Text(l.yes))],
     ));
   }
 }

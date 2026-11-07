@@ -37,7 +37,7 @@ class NotificationsScreen extends ConsumerWidget {
           IconButton(
             icon: const Icon(Icons.done_all_rounded, color: AppTheme.primary),
             tooltip: l.notificationsMarkAllRead,
-            onPressed: () => actions.markAllRead(user.id),
+            onPressed: () => runUiAction(context, ref, () => actions.markAllRead(user.id)),
           ),
       ],
       body: notifications.isEmpty
@@ -52,7 +52,7 @@ class NotificationsScreen extends ConsumerWidget {
                   child: _NotifCard(
                     notif: n,
                     l: l,
-                    onTap: () => actions.markRead(n.id),
+                    onTap: () => runUiAction(context, ref, () => actions.markRead(n.id)),
                   ),
                 );
               },

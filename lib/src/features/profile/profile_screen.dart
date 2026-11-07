@@ -54,19 +54,8 @@ class ProfileScreen extends ConsumerWidget {
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: AppTheme.primary.withValues(alpha: 0.12),
-                                image: user.photoUrl.isNotEmpty
-                                    ? DecorationImage(
-                                        image: ResizeImage(
-                                          NetworkImage(user.photoUrl),
-                                          width: (90 * MediaQuery.devicePixelRatioOf(context)).round(),
-                                          height: (90 * MediaQuery.devicePixelRatioOf(context)).round(),
-                                        ),
-                                        fit: BoxFit.cover,
-                                      )
-                                    : null,
                               ),
-                              child: user.photoUrl.isEmpty
-                                  ? Center(
+                              child: Center(
                                       child: Text(
                                         user.initials,
                                         style: const TextStyle(
@@ -75,8 +64,7 @@ class ProfileScreen extends ConsumerWidget {
                                           fontWeight: FontWeight.w800,
                                         ),
                                       ),
-                                    )
-                                  : null,
+                                    ),
                             ),
                           ),
                           Positioned(

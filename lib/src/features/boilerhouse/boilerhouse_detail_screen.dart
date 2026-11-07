@@ -6,7 +6,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
 import '../../domain/models/boiler_house.dart';
-import '../../domain/models/app_user.dart';
 import '../../domain/models/change_log.dart';
 import '../../services/firebase_service.dart';
 import '../auth/auth_providers.dart';
@@ -162,10 +161,10 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
   @override
   void dispose() { _titleC.dispose(); _textC.dispose(); super.dispose(); }
 
-  void _submit() {
+  Future<void> _submit() async {
     final user = ref.read(currentUserProvider);
     if (_titleC.text.trim().isEmpty || user == null) return;
-    _fb.addChangeLog(ChangeLogEntry(
+    final saved = await runUiAction(context, ref, () => _fb.addChangeLog(ChangeLogEntry(
       id: 'cl-${DateTime.now().millisecondsSinceEpoch}',
       boilerHouseId: widget.boilerHouseId,
       title: _titleC.text.trim(),
@@ -173,7 +172,8 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
       authorId: user.id,
       authorName: user.fullName,
       createdAt: DateTime.now(),
-    ));
+    )));
+    if (!saved || !mounted) return;
     _titleC.clear(); _textC.clear();
     setState(() => _showForm = false);
   }
@@ -226,7 +226,7 @@ class _ChangeLogSectionState extends ConsumerState<_ChangeLogSection> {
         // Log entries
         logs.when(
           loading: () => const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator())),
-          error: (e, _) => Text('${l.changeLogError}: $e', style: const TextStyle(color: AppTheme.error)),
+          error: (e, _) => Text(l.syncError, style: const TextStyle(color: AppTheme.error)),
           data: (entries) {
             if (entries.isEmpty) {
               return Padding(
@@ -260,17 +260,18 @@ class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
   @override
   void dispose() { _replyC.dispose(); super.dispose(); }
 
-  void _sendReaction() {
+  Future<void> _sendReaction() async {
     final user = ref.read(currentUserProvider);
     if (_replyC.text.trim().isEmpty || user == null) return;
-    _fb.addReaction(ChangeLogReaction(
+    final saved = await runUiAction(context, ref, () => _fb.addReaction(ChangeLogReaction(
       id: 'r-${DateTime.now().millisecondsSinceEpoch}',
       changeLogId: widget.entry.id,
       text: _replyC.text.trim(),
       authorId: user.id,
       authorName: user.fullName,
       createdAt: DateTime.now(),
-    ));
+    )));
+    if (!saved || !mounted) return;
     _replyC.clear();
     setState(() => _showReplyField = false);
   }
@@ -279,8 +280,6 @@ class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
   Widget build(BuildContext context) {
     final e = widget.entry;
     final user = ref.watch(currentUserProvider);
-    final isOwner = user?.id == e.authorId;
-    final isAdmin = user?.role == UserRole.admin || user?.role == UserRole.coAdmin;
 
     return GlassCard(
       margin: const EdgeInsets.only(bottom: 12),
@@ -301,11 +300,8 @@ class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
             Text(e.authorName, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 12, color: AppTheme.ink)),
             Text(_formatDate(e.createdAt), style: const TextStyle(fontSize: 11, color: AppTheme.inkFaint)),
           ])),
-          if (isOwner || isAdmin)
-            IconButton(
-              icon: const Icon(Icons.delete_outline, size: 18, color: AppTheme.error),
-              onPressed: () => _fb.deleteChangeLog(e.id),
-            ),
+          Tooltip(message: ref.watch(l10nProvider).immutableHistory,
+            child: const Icon(Icons.lock_outline, size: 18, color: AppTheme.inkFaint)),
         ]),
         const SizedBox(height: 8),
         Text(e.title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: AppTheme.ink)),
@@ -316,7 +312,7 @@ class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
 
         // Actions row
         const SizedBox(height: 8),
-        Row(children: [
+        Wrap(spacing: 16, runSpacing: 8, children: [
           InkWell(
             onTap: () => setState(() { _showReactions = !_showReactions; }),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -325,7 +321,6 @@ class _ChangeLogCardState extends ConsumerState<_ChangeLogCard> {
               Text(ref.watch(l10nProvider).comments, style: const TextStyle(fontSize: 12, color: AppTheme.inkSoft)),
             ]),
           ),
-          const SizedBox(width: 16),
           if (user != null)
             InkWell(
               onTap: () => setState(() => _showReplyField = !_showReplyField),
@@ -378,7 +373,7 @@ class _ReactionsList extends ConsumerWidget {
     final reactions = ref.watch(_reactionsProvider(changeLogId));
     return reactions.when(
       loading: () => const Padding(padding: EdgeInsets.all(8), child: LinearProgressIndicator()),
-      error: (e, _) => Text('$e', style: const TextStyle(color: AppTheme.error, fontSize: 12)),
+      error: (e, _) => Text(ref.watch(l10nProvider).syncError, style: const TextStyle(color: AppTheme.error, fontSize: 12)),
       data: (items) {
         if (items.isEmpty) {
           return Padding(
@@ -402,10 +397,6 @@ class _ReactionTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final user = ref.watch(currentUserProvider);
-    final canDelete = user?.id == reaction.authorId ||
-        user?.role == UserRole.admin ||
-        user?.role == UserRole.coAdmin;
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -415,11 +406,7 @@ class _ReactionTile extends ConsumerWidget {
           TextSpan(text: '${reaction.authorName}: ', style: const TextStyle(fontWeight: FontWeight.w600)),
           TextSpan(text: reaction.text),
         ]))),
-        if (canDelete)
-          GestureDetector(
-            onTap: () => _fb.deleteReaction(changeLogId, reaction.id),
-            child: const Icon(Icons.close, size: 14, color: AppTheme.inkFaint),
-          ),
+
       ]),
     );
   }

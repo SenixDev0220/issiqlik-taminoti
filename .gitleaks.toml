@@ -1,0 +1,11 @@
+title = "Issiqlik secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public Android Firebase client key in its two reviewed configuration files; not an Admin/service-account credential"
+condition = "AND"
+paths = ['''^android/app/google-services\.json$''', '''^lib/firebase_options\.dart$''']
+regexTarget = "secret"
+regexes = ['''^AIzaSyCDN0bAsklneKrZcJ21QJ-fVWZ_DkdAl4c$''']

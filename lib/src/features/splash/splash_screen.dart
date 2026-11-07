@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -8,8 +7,6 @@ import 'package:go_router/go_router.dart';
 import '../../core/app_constants.dart';
 import '../../core/app_theme.dart';
 import '../../core/glass.dart';
-import '../../services/firebase_service.dart';
-import '../../services/push_service.dart';
 import '../auth/auth_providers.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
@@ -35,11 +32,20 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
       duration: const Duration(milliseconds: 900),
     )..forward();
     _scale = Tween<double>(begin: 0.7, end: 1.0).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.elasticOut),
+      _ctrl.drive(CurveTween(curve: Curves.elasticOut)),
     );
-    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
+    _fade = _ctrl.drive(CurveTween(curve: Curves.easeIn));
 
     _restoreSession();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context) ||
+        MediaQuery.accessibleNavigationOf(context) || !TickerMode.valuesOf(context).enabled) {
+      _ctrl.value = 1;
+    }
   }
 
   Future<void> _restoreSession() async {
@@ -51,28 +57,12 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
       final user = await restoreSession().timeout(const Duration(seconds: 15));
       if (!mounted) return;
       if (user != null) {
+        // restoreSession returns only a freshly server-validated identity.
         ref.read(currentUserProvider.notifier).state = user;
-        FirebaseService.instance.waitForPendingWrites();
-        FirebaseService.instance.seedIfEmpty().catchError((_) {});
-        PushService.instance.init();
-        PushService.instance.registerToken(user.id);
       }
       context.go(user != null ? '/home' : '/login');
-    } on TimeoutException {
-      if (!mounted) return;
-      setState(() {
-        _restoring = false;
-        _restoreFailed = true;
-      });
-    } on FirebaseException catch (error, stackTrace) {
-      debugPrint('Session restore failed: $error\n$stackTrace');
-      if (!mounted) return;
-      setState(() {
-        _restoring = false;
-        _restoreFailed = true;
-      });
-    } catch (error, stackTrace) {
-      debugPrint('Session restore failed: $error\n$stackTrace');
+    } catch (_) {
+      // No raw backend messages, personal data or stack traces in the UI/log.
       if (!mounted) return;
       setState(() {
         _restoring = false;
@@ -96,7 +86,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
           children: [
             Expanded(
               child: Center(
-                child: FadeTransition(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: FadeTransition(
                   opacity: _fade,
                   child: ScaleTransition(
                     scale: _scale,
@@ -158,6 +150,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                       ],
                     ),
                   ),
+                ),
                 ),
               ),
             ),

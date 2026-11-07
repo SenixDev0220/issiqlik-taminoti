@@ -1,0 +1,11 @@
+{
+  "indexes": [
+    {"collectionGroup":"journal","queryScope":"COLLECTION","fields":[{"fieldPath":"deleted","order":"ASCENDING"},{"fieldPath":"eventDateTime","order":"DESCENDING"}]},
+    {"collectionGroup":"journal","queryScope":"COLLECTION","fields":[{"fieldPath":"boilerHouseId","order":"ASCENDING"},{"fieldPath":"deleted","order":"ASCENDING"},{"fieldPath":"eventDateTime","order":"DESCENDING"}]},
+    {"collectionGroup":"notifications","queryScope":"COLLECTION","fields":[{"fieldPath":"recipientId","order":"ASCENDING"},{"fieldPath":"sentAt","order":"DESCENDING"}]},
+    {"collectionGroup":"notifications","queryScope":"COLLECTION","fields":[{"fieldPath":"recipientId","order":"ASCENDING"},{"fieldPath":"isRead","order":"ASCENDING"}]},
+    {"collectionGroup":"changeLogs","queryScope":"COLLECTION","fields":[{"fieldPath":"boilerHouseId","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]},
+    {"collectionGroup":"shifts","queryScope":"COLLECTION","fields":[{"fieldPath":"boilerHouseId","order":"ASCENDING"},{"fieldPath":"date","order":"ASCENDING"}]}
+  ],
+  "fieldOverrides": []
+}

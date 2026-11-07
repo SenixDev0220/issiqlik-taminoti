@@ -200,7 +200,7 @@ class _EmptyWeek extends StatelessWidget {
 
 // -- Shift card ---------------------------------------------------------------
 
-class _ShiftCard extends StatelessWidget {
+class _ShiftCard extends ConsumerWidget {
   final Shift shift;
   final AppL10n l;
   final bool isMine;
@@ -214,13 +214,13 @@ class _ShiftCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final color = _shiftColor(shift.type);
     final textTheme = Theme.of(context).textTheme;
     return GlassCard(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-      onLongPress: canDelete ? () => _confirmDelete(context) : null,
+      onLongPress: canDelete ? () => _confirmDelete(context, ref) : null,
       child: Row(
         children: [
           GlassIconTile(icon: _shiftIcon(shift.type), color: color),
@@ -284,7 +284,7 @@ class _ShiftCard extends StatelessWidget {
                   ),
                 ],
                 onSelected: (value) {
-                  if (value == 'delete') _confirmDelete(context);
+                  if (value == 'delete') _confirmDelete(context, ref);
                 },
               ),
             ),
@@ -293,7 +293,7 @@ class _ShiftCard extends StatelessWidget {
     );
   }
 
-  void _confirmDelete(BuildContext context) {
+  void _confirmDelete(BuildContext context, WidgetRef ref) {
     showDialog(
       context: context,
       builder: (dialogCtx) => AlertDialog(
@@ -305,11 +305,8 @@ class _ShiftCard extends StatelessWidget {
               backgroundColor: AppTheme.error,
               minimumSize: const Size(0, 44),
             ),
-            onPressed: () {
-              // Firestore's offline queue handles delivery; rules violations
-              // can't happen here because the delete UI is admin-only.
-              FirebaseService.instance.deleteShift(shift.id).catchError((_) {});
-              Navigator.pop(dialogCtx);
+            onPressed: () async {
+              if (await runUiAction(context, ref, () => FirebaseService.instance.deleteShift(shift.id)) && dialogCtx.mounted) Navigator.pop(dialogCtx);
             },
             child: Text(l.journalDelete),
           ),
@@ -363,6 +360,7 @@ class _ShiftSheetState extends ConsumerState<_ShiftSheet> {
   }
 
   Future<void> _save() async {
+    if (_saving) return;
     if (!_formKey.currentState!.validate()) return;
     final user = ref.read(currentUserProvider);
     if (user == null) return;
@@ -396,8 +394,10 @@ class _ShiftSheetState extends ConsumerState<_ShiftSheet> {
       createdBy: user.id,
       createdAt: DateTime.now(),
     );
-    FirebaseService.instance.addShift(shift);
-    if (mounted) Navigator.pop(context);
+    final saved = await runUiAction(context, ref, () => FirebaseService.instance.addShift(shift));
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (saved) Navigator.pop(context);
   }
 
   @override

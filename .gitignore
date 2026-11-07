@@ -37,7 +37,18 @@ migrate_working_dir/
 /build/
 **/build/
 /coverage/
-functions/node_modules/
+**/node_modules/
+.tools/
+security-reports/
+artifacts/
+*.apk
+*.aab
+*.apks
+*.idsig
+*serviceAccount*.json
+service-account*.json
+*-credentials.json
+signing-backup.properties
 .firebase/
 firebase-debug.log
 

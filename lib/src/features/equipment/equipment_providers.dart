@@ -2,9 +2,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/equipment.dart';
 import '../../services/firebase_service.dart';
+import '../../core/app_state.dart';
 
 final equipmentStreamProvider = StreamProvider<List<Equipment>>((ref) {
-  return FirebaseService.instance.equipmentStream();
+  return FirebaseService.instance.equipmentStream(user: ref.watch(currentUserProvider));
 });
 
 final equipmentListProvider = Provider.family<List<Equipment>, String>((ref, boilerHouseId) {

@@ -97,7 +97,7 @@ class FirestoreSyncTracker {
       onError: (Object error, StackTrace stackTrace) {
         _pendingWrites--;
         _hasWriteError = true;
-        debugPrint('Firestore write failed: $error\n$stackTrace');
+        if (kDebugMode) debugPrint('Firestore write failed (${error.runtimeType})');
         _emit();
       },
     ));
@@ -116,7 +116,13 @@ class FirestoreSyncTracker {
 
   void reportFailure(Object error, StackTrace stackTrace) {
     _hasWriteError = true;
-    debugPrint('Firestore operation failed: $error\n$stackTrace');
+    if (kDebugMode) debugPrint('Firestore operation failed (${error.runtimeType})');
+    _emit();
+  }
+
+  void reset() {
+    _snapshots.clear();
+    _hasWriteError = false;
     _emit();
   }
 

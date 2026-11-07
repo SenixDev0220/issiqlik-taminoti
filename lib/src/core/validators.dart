@@ -4,7 +4,7 @@ class Validators {
 
   static const int loginMinLength = 3;
   static const int loginMaxLength = 30;
-  static const int passwordMinLength = 8;
+  static const int passwordMinLength = 12;
   static const int passwordMaxLength = 64;
   static const int nameMaxLength = 50;
 

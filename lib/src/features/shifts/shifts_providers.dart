@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/shift.dart';
 import '../../services/firebase_service.dart';
+import '../../core/app_state.dart';
 
 /// Monday (date-only) of the week containing [d]. Use this to build the family
 /// key for [weekShiftsProvider] so equal weeks share a single stream.
@@ -13,6 +14,7 @@ DateTime weekStartOf(DateTime d) {
 /// Monday date-only [DateTime] (see [weekStartOf]).
 final weekShiftsProvider = StreamProvider.family<List<Shift>, DateTime>((ref, weekStart) {
   return FirebaseService.instance.shiftsStream(
+    user: ref.watch(currentUserProvider),
     from: weekStart,
     to: DateTime(weekStart.year, weekStart.month, weekStart.day + 7),
   );

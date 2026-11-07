@@ -14,13 +14,14 @@ import '../../domain/models/app_user.dart';
 import '../../domain/models/journal_entry.dart';
 import '../../services/firebase_service.dart';
 import '../auth/auth_providers.dart';
+import '../boilerhouse/boilerhouse_providers.dart';
 import 'journal_providers.dart';
 
 // Convenience getter used throughout this file
 extension _JournalRef on WidgetRef {
-  void addJournalEntry(JournalEntry e) => read(journalStoreNotifierProvider).addEntry(e);
-  void updateJournalEntry(JournalEntry e) => read(journalStoreNotifierProvider).updateEntry(e);
-  void deleteJournalEntry(String id) => read(journalStoreNotifierProvider).deleteEntry(id);
+  Future<void> addJournalEntry(JournalEntry e) => read(journalStoreNotifierProvider).addEntry(e);
+  Future<void> updateJournalEntry(JournalEntry e) => read(journalStoreNotifierProvider).updateEntry(e);
+  Future<void> deleteJournalEntry(String id) => read(journalStoreNotifierProvider).deleteEntry(id);
 }
 
 // Shared color/icon mapping for importance and status (glass palette).
@@ -312,9 +313,8 @@ class _OptionsMenu extends ConsumerWidget {
                 color: selected ? AppTheme.primary : AppTheme.inkFaint,
               ),
               title: Text(s.label(l)),
-              onTap: () {
-                ref.updateJournalEntry(_copyWith(entry, status: s));
-                Navigator.pop(context);
+              onTap: () async {
+                if (await runUiAction(context, ref, () => ref.updateJournalEntry(_copyWith(entry, status: s))) && context.mounted) Navigator.pop(context);
               },
             );
           }).toList(),
@@ -332,9 +332,8 @@ class _OptionsMenu extends ConsumerWidget {
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: Text(l.journalCancel)),
           ElevatedButton(
-            onPressed: () {
-              ref.deleteJournalEntry(entry.id);
-              Navigator.pop(context);
+            onPressed: () async {
+              if (await runUiAction(context, ref, () => ref.deleteJournalEntry(entry.id)) && context.mounted) Navigator.pop(context);
             },
             style: ElevatedButton.styleFrom(
               backgroundColor: AppTheme.error,
@@ -460,19 +459,8 @@ class _DetailsSheet extends StatelessWidget {
                     onTap: () => _openPhoto(context, entry.photoPaths[i]),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        entry.photoPaths[i],
-                        width: 100,
-                        height: 100,
-                        cacheWidth: (100 * MediaQuery.devicePixelRatioOf(context)).round(),
-                        cacheHeight: (100 * MediaQuery.devicePixelRatioOf(context)).round(),
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Container(
-                          width: 100, height: 100,
-                          color: AppTheme.inkFaint.withValues(alpha: 0.15),
-                          child: const Icon(Icons.broken_image, color: AppTheme.inkFaint),
-                        ),
-                      ),
+                      child: const SizedBox(width: 100, height: 100,
+                        child: Icon(Icons.lock_outline, color: AppTheme.inkFaint)),
                     ),
                   ),
                 ),
@@ -493,7 +481,7 @@ class _DetailsSheet extends StatelessWidget {
           children: [
             Center(
               child: InteractiveViewer(
-                child: Image.network(url, fit: BoxFit.contain),
+                child: Padding(padding: const EdgeInsets.all(32), child: Text(l.secureMediaUnavailable, style: const TextStyle(color: Colors.white))),
               ),
             ),
             Positioned(
@@ -558,6 +546,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
   final List<File> _newPhotos = [];
   late List<String> _existingPhotoUrls;
   bool _saving = false;
+  String? _boilerHouseId;
 
   bool get _isEditing => widget.existing != null;
 
@@ -565,6 +554,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
   void initState() {
     super.initState();
     final e = widget.existing;
+    _boilerHouseId = e?.boilerHouseId;
     _titleCtrl = TextEditingController(text: e?.title ?? '');
     _descCtrl = TextEditingController(text: e?.description ?? '');
     _categoryCtrl = TextEditingController(text: e?.category ?? '');
@@ -582,6 +572,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
   }
 
   Future<void> _save() async {
+    if (_saving) return;
     if (!_formKey.currentState!.validate()) return;
     final user = ref.read(currentUserProvider);
     if (user == null) return;
@@ -602,8 +593,10 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
       }
     }
 
+    if (!mounted) return;
     final allPhotos = [..._existingPhotoUrls, ...uploadedUrls];
 
+    var saved = false;
     if (_isEditing) {
       final updated = JournalEntry(
         id: widget.existing!.id,
@@ -621,11 +614,11 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
         createdAt: widget.existing!.createdAt,
         updatedAt: DateTime.now(),
       );
-      ref.updateJournalEntry(updated);
+      saved = await runUiAction(context, ref, () => ref.updateJournalEntry(updated));
     } else {
       final entry = JournalEntry(
         id: 'je-${DateTime.now().millisecondsSinceEpoch}',
-        boilerHouseId: user.boilerhouseIds.isNotEmpty ? user.boilerhouseIds.first : '',
+        boilerHouseId: _boilerHouseId!,
         eventDateTime: DateTime.now(),
         category: _categoryCtrl.text.trim(),
         title: _titleCtrl.text.trim(),
@@ -638,16 +631,18 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
       );
-      ref.addJournalEntry(entry);
+      saved = await runUiAction(context, ref, () => ref.addJournalEntry(entry));
     }
 
-    if (mounted) Navigator.pop(context);
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (saved) Navigator.pop(context);
   }
 
   Future<void> _pickPhoto({required ImageSource source}) async {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ref.read(l10nProvider).photoUploadUnavailable), duration: const Duration(seconds: 2)),
+      SnackBar(content: Text(ref.read(l10nProvider).secureMediaUnavailable), duration: const Duration(seconds: 2)),
     );
   }
 
@@ -687,6 +682,19 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
               ),
               const SizedBox(height: 16),
 
+              if (!_isEditing) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _boilerHouseId,
+                  isExpanded: true,
+                  decoration: InputDecoration(labelText: l.navBoilerhouses),
+                  items: ref.watch(boilerHouseListProvider).map((house) => DropdownMenuItem(
+                    value: house.id, child: Text(house.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  )).toList(),
+                  onChanged: (value) => setState(() => _boilerHouseId = value),
+                  validator: (value) => value == null ? l.fieldRequired : null,
+                ),
+                const SizedBox(height: 12),
+              ],
               TextFormField(
                 controller: _titleCtrl,
                 textInputAction: TextInputAction.next,
@@ -739,7 +747,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
                     child: GestureDetector(
                       onTap: () => setState(() => _importance = imp),
                       child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
+                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 150),
                         margin: const EdgeInsets.symmetric(horizontal: 3),
                         padding: const EdgeInsets.symmetric(vertical: 10),
                         decoration: BoxDecoration(
@@ -774,7 +782,7 @@ class _EntrySheetState extends ConsumerState<_EntrySheet> {
                     child: GestureDetector(
                       onTap: () => setState(() => _status = st),
                       child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
+                        duration: MediaQuery.disableAnimationsOf(context) ? Duration.zero : const Duration(milliseconds: 150),
                         margin: const EdgeInsets.symmetric(horizontal: 3),
                         padding: const EdgeInsets.symmetric(vertical: 10),
                         decoration: BoxDecoration(
@@ -919,24 +927,8 @@ class _PhotoThumb extends StatelessWidget {
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(16),
-            child: Image.network(
-              url,
-              width: 80,
-              height: 80,
-              cacheWidth: (80 * MediaQuery.devicePixelRatioOf(context)).round(),
-              cacheHeight: (80 * MediaQuery.devicePixelRatioOf(context)).round(),
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => Container(
-                width: 80, height: 80,
-                color: AppTheme.inkFaint.withValues(alpha: 0.15),
-                child: const Icon(Icons.broken_image, color: AppTheme.inkFaint),
-              ),
-              loadingBuilder: (_, child, prog) => prog == null ? child : Container(
-                width: 80, height: 80,
-                color: AppTheme.inkFaint.withValues(alpha: 0.08),
-                child: const Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
-              ),
-            ),
+            child: const SizedBox(width: 80, height: 80,
+              child: Icon(Icons.lock_outline, color: AppTheme.inkFaint)),
           ),
           Positioned(
             top: 2, right: 2,

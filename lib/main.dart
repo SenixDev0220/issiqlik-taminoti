@@ -49,15 +49,33 @@ class _AppBootstrapState extends State<_AppBootstrap> {
     _initialization = _initializeFirebase();
   }
 
-  Future<void> _initializeFirebase() async {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    // Keep offline persistence while allowing Firestore to evict stale cache data.
-    FirebaseFirestore.instance.settings = const Settings(
-      persistenceEnabled: true,
-      cacheSizeBytes: 100 * 1024 * 1024,
-    );
+  Future<void>? _firebaseSetup;
+  bool _cacheCleared = false;
+
+  Future<void> _initializeFirebase() {
+    // A retry observes the same pending operation, rather than racing a second
+    // native initialization/cache clear after the visible timeout.
+    _firebaseSetup ??= _configureFirebase().catchError((Object error) {
+      _firebaseSetup = null;
+      throw error;
+    });
+    return _firebaseSetup!.timeout(const Duration(seconds: 20));
+  }
+
+  Future<void> _configureFirebase() async {
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    }
+    final firestore = FirebaseFirestore.instance;
+    // Before any provider reads: remove data from older persistent-cache builds.
+    // Never continue to protected UI if clearing confidential disk data fails.
+    if (!_cacheCleared) {
+      await firestore.clearPersistence();
+      _cacheCleared = true;
+    }
+    firestore.settings = const Settings(persistenceEnabled: false);
   }
 
   void _retryInitialization() {
@@ -101,7 +119,7 @@ class _StartupView extends StatelessWidget {
       backgroundColor: Colors.white,
       body: SafeArea(
         child: Center(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(32),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -109,6 +127,7 @@ class _StartupView extends StatelessWidget {
                 Image.asset(
                   'assets/images/logo.png',
                   width: 88,
+                  cacheWidth: (88 * MediaQuery.devicePixelRatioOf(context)).round(),
                   height: 88,
                   fit: BoxFit.contain,
                 ),

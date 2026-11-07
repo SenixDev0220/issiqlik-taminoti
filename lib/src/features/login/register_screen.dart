@@ -38,24 +38,32 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
   }
 
   Future<void> _submit() async {
+    if (_loading) return;
     if (!_formKey.currentState!.validate()) return;
     setState(() => _loading = true);
 
     final l = ref.read(l10nProvider);
-    final error = await registerUser(
+    String? error;
+    try {
+    error = await registerUser(
       ref,
       login: Validators.sanitize(_loginCtrl.text),
-      password: _passCtrl.text.trim(),
+      password: _passCtrl.text,
       firstName: Validators.sanitize(_firstNameCtrl.text),
       lastName: Validators.sanitize(_lastNameCtrl.text),
       phone: Validators.sanitize(_phoneCtrl.text),
     );
+    } catch (_) {
+      error = l.startupError;
+    }
 
     if (!mounted) return;
     setState(() => _loading = false);
 
     if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error), backgroundColor: AppTheme.error));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error), backgroundColor: AppTheme.error),
+      );
       return;
     }
 
@@ -87,44 +95,74 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
       title: l.registerTitle,
       leading: BackButton(onPressed: () => context.go('/login')),
       body: SingleChildScrollView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(l.registerSubtitle, style: const TextStyle(fontSize: 14, color: AppTheme.inkSoft)),
+              Text(
+                l.registerSubtitle,
+                style: const TextStyle(fontSize: 14, color: AppTheme.inkSoft),
+              ),
               const SizedBox(height: 24),
 
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _firstNameCtrl,
-                      textInputAction: TextInputAction.next,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: InputDecoration(labelText: l.firstNameLabel, hintText: l.firstNameHint, prefixIcon: const Icon(Icons.person_outline)),
-                      validator: Validators.validateName,
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final firstNameField = TextFormField(
+                    controller: _firstNameCtrl,
+                    textInputAction: TextInputAction.next,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: InputDecoration(
+                      labelText: l.firstNameLabel,
+                      hintText: l.firstNameHint,
+                      prefixIcon: const Icon(Icons.person_outline),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _lastNameCtrl,
-                      textInputAction: TextInputAction.next,
-                      textCapitalization: TextCapitalization.words,
-                      decoration: InputDecoration(labelText: l.lastNameLabel, hintText: l.lastNameHint),
-                      validator: Validators.validateName,
+                    validator: Validators.validateName,
+                  );
+                  final lastNameField = TextFormField(
+                    controller: _lastNameCtrl,
+                    textInputAction: TextInputAction.next,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: InputDecoration(
+                      labelText: l.lastNameLabel,
+                      hintText: l.lastNameHint,
                     ),
-                  ),
-                ],
+                    validator: Validators.validateName,
+                  );
+
+                  if (constraints.maxWidth <
+                      420 * (MediaQuery.textScalerOf(context).scale(14) / 14)) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        firstNameField,
+                        const SizedBox(height: 12),
+                        lastNameField,
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    children: [
+                      Expanded(child: firstNameField),
+                      const SizedBox(width: 12),
+                      Expanded(child: lastNameField),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 14),
 
               TextFormField(
                 controller: _loginCtrl,
                 textInputAction: TextInputAction.next,
-                decoration: InputDecoration(labelText: l.loginLabel, hintText: l.loginHint, prefixIcon: const Icon(Icons.alternate_email)),
+                decoration: InputDecoration(
+                  labelText: l.loginLabel,
+                  hintText: l.loginHint,
+                  prefixIcon: const Icon(Icons.alternate_email),
+                ),
                 validator: Validators.validateLogin,
               ),
               const SizedBox(height: 14),
@@ -133,7 +171,11 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                 controller: _phoneCtrl,
                 textInputAction: TextInputAction.next,
                 keyboardType: TextInputType.phone,
-                decoration: InputDecoration(labelText: l.phoneLabel, hintText: l.phoneHint, prefixIcon: const Icon(Icons.phone_outlined)),
+                decoration: InputDecoration(
+                  labelText: l.phoneLabel,
+                  hintText: l.phoneHint,
+                  prefixIcon: const Icon(Icons.phone_outlined),
+                ),
                 validator: Validators.validatePhone,
               ),
               const SizedBox(height: 14),
@@ -147,8 +189,13 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   hintText: l.passwordHint,
                   prefixIcon: const Icon(Icons.lock_outline),
                   suffixIcon: IconButton(
-                    icon: Icon(_obscurePass ? Icons.visibility_off_outlined : Icons.visibility_outlined),
-                    onPressed: () => setState(() => _obscurePass = !_obscurePass),
+                    icon: Icon(
+                      _obscurePass
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                    onPressed: () =>
+                        setState(() => _obscurePass = !_obscurePass),
                   ),
                 ),
                 validator: Validators.validatePassword,
@@ -165,13 +212,22 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   hintText: l.confirmPasswordHint,
                   prefixIcon: const Icon(Icons.lock_outline),
                   suffixIcon: IconButton(
-                    icon: Icon(_obscureConfirm ? Icons.visibility_off_outlined : Icons.visibility_outlined),
-                    onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                    icon: Icon(
+                      _obscureConfirm
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                    onPressed: () =>
+                        setState(() => _obscureConfirm = !_obscureConfirm),
                   ),
                 ),
                 validator: (v) {
-                  if (v == null || v.trim().isEmpty) return l.fieldRequired;
-                  if (v.trim() != _passCtrl.text.trim()) return l.passwordMismatch;
+                  if (v == null || v.trim().isEmpty) {
+                    return l.fieldRequired;
+                  }
+                  if (v != _passCtrl.text) {
+                    return l.passwordMismatch;
+                  }
                   return null;
                 },
               ),
@@ -180,18 +236,35 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
               ElevatedButton(
                 onPressed: _loading ? null : _submit,
                 child: _loading
-                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
                     : Text(l.registerButton),
               ),
               const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+              Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 4,
                 children: [
-                  Text(l.alreadyHaveAccount, style: const TextStyle(color: AppTheme.inkSoft)),
-                  const SizedBox(width: 4),
+                  Text(
+                    l.alreadyHaveAccount,
+                    style: const TextStyle(color: AppTheme.inkSoft),
+                  ),
                   GestureDetector(
                     onTap: () => context.go('/login'),
-                    child: Text(l.loginLink, style: const TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700)),
+                    child: Text(
+                      l.loginLink,
+                      style: const TextStyle(
+                        color: AppTheme.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
                 ],
               ),

@@ -182,25 +182,14 @@ class _TotalsCard extends StatelessWidget {
       heat += h.annualHeatProduction;
     }
     return GlassCard(
-      child: Column(
+      child: ResponsiveWrap(
+        minChildWidth: 130,
+        spacing: 16,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: _StatTile(value: gas, caption: l.fieldNaturalGas, unit: l.unitM3)),
-              const SizedBox(width: 14),
-              Expanded(child: _StatTile(value: electricity, caption: l.fieldElectricity, unit: l.unitKw)),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: _StatTile(value: water, caption: l.fieldColdWater, unit: l.unitM3)),
-              const SizedBox(width: 14),
-              Expanded(child: _StatTile(value: heat, caption: l.analyticsHeat, unit: 'Гкал')),
-            ],
-          ),
+          _StatTile(value: gas, caption: l.fieldNaturalGas, unit: l.unitM3),
+          _StatTile(value: electricity, caption: l.fieldElectricity, unit: l.unitKw),
+          _StatTile(value: water, caption: l.fieldColdWater, unit: l.unitM3),
+          _StatTile(value: heat, caption: l.analyticsHeat, unit: l.isCyrl ? 'Гкал' : 'Gkal'),
         ],
       ),
     );
@@ -463,8 +452,8 @@ class _StatusCard extends StatelessWidget {
   Widget _statusRow(StatusChip chip, int count, Color color) {
     return Row(
       children: [
-        chip,
-        const Spacer(),
+        Expanded(child: chip),
+        const SizedBox(width: 8),
         Text('$count', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: color)),
       ],
     );

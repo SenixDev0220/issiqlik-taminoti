@@ -29,10 +29,7 @@ Future<String?> attemptLogin(WidgetRef ref, String login, String password) async
     return l.loginWrongError;
   }
   ref.read(currentUserProvider.notifier).state = user;
-  _fb.waitForPendingWrites();
-  _fb.seedIfEmpty().catchError((_) {});
-  PushService.instance.init();
-  PushService.instance.registerToken(user.id);
+  await PushService.instance.init();
   return null;
 }
 
@@ -79,5 +76,12 @@ Future<String?> changePassword({
 Future<AppUser?> restoreSession() async {
   final uid = _fb.currentUid;
   if (uid == null) return null;
-  return _fb.fetchUser(uid);
+  try {
+    final user = await _fb.fetchUser(uid);
+    if (user?.status == UserStatus.active) return user;
+  } catch (_) {
+    // A cached profile cannot restore an authorized session.
+  }
+  await _fb.signOut();
+  return null;
 }

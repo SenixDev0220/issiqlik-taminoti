@@ -36,6 +36,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _lockoutUntil != null && DateTime.now().isBefore(_lockoutUntil!);
 
   Future<void> _submit() async {
+    if (_loading) return;
     if (_isLockedOut) {
       final remaining = _lockoutUntil!.difference(DateTime.now()).inSeconds;
       setState(() => _error = ref.read(l10nProvider).lockoutMessage(remaining));
@@ -47,7 +48,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     setState(() => _loading = true);
     final l = ref.read(l10nProvider);
     final login = Validators.sanitize(_loginCtrl.text);
-    final error = await attemptLogin(ref, login, _passCtrl.text.trim());
+    String? error;
+    try {
+      error = await attemptLogin(ref, login, _passCtrl.text);
+    } catch (_) {
+      error = l.startupError;
+    }
     if (!mounted) return;
     setState(() => _loading = false);
 
@@ -75,6 +81,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
             child: Form(
               key: _formKey,
@@ -96,7 +103,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                       ],
                     ),
-                    child: Image.asset('assets/images/logo.png', fit: BoxFit.contain),
+                    child: Image.asset('assets/images/logo.png', cacheWidth: (60 * MediaQuery.devicePixelRatioOf(context)).round(), fit: BoxFit.contain),
                   ),
                   const SizedBox(height: 20),
                   Text(

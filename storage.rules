@@ -1,0 +1,8 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // No confidential bearer-token URLs. Uploads are disabled in this release.
+    // Bundled diagrams are app assets, not objects in Firebase Storage.
+    match /{path=**} { allow read, write: if false; }
+  }
+}

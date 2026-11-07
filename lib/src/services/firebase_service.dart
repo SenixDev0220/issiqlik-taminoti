@@ -1,13 +1,9 @@
 import 'dart:io';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
-
 import '../core/firestore_sync_tracker.dart';
-import '../data/boiler_seed.dart';
-import '../data/sample_data.dart' as seed;
+import '../core/security_policy.dart';
 import '../domain/models/app_user.dart';
 import '../domain/models/audit_entry.dart';
 import '../domain/models/boiler_house.dart';
@@ -19,37 +15,17 @@ import '../domain/models/journal_entry.dart';
 import '../domain/models/notification_model.dart';
 import '../domain/models/shift.dart';
 
-/// Central Firebase service вЂ” all Firestore reads/writes go through here.
+/// Spark-compatible operations. Firestore rules are authoritative.
 class FirebaseService {
   FirebaseService._();
   static final instance = FirebaseService._();
-
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
-  final _storage = FirebaseStorage.instance;
-
-  Future<T> _trackWrite<T>(Future<T> write) =>
-      FirestoreSyncTracker.instance.trackWrite(write);
-
-  Future<T> _observeOperation<T>(Future<T> operation) {
-    FirestoreSyncTracker.instance.observeOperation(operation);
-    return operation;
-  }
-
-  void _reportSync(
-    String source, {
-    required bool isFromCache,
-    required bool hasPendingWrites,
-  }) {
-    FirestoreSyncTracker.instance.reportSnapshot(
-      source: source,
-      isFromCache: isFromCache,
-      hasPendingWrites: hasPendingWrites,
-    );
-  }
-
-  // в”Ђв”Ђ Collections в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+  static const _server = GetOptions(source: Source.server);
   CollectionReference<Map<String, dynamic>> get _users => _db.collection('users');
+  CollectionReference<Map<String, dynamic>> get _access => _db.collection('access');
+  CollectionReference<Map<String, dynamic>> get _directory => _db.collection('employeeDirectory');
+  CollectionReference<Map<String, dynamic>> get _profiles => _db.collection('userProfiles');
   CollectionReference<Map<String, dynamic>> get _journal => _db.collection('journal');
   CollectionReference<Map<String, dynamic>> get _notifications => _db.collection('notifications');
   CollectionReference<Map<String, dynamic>> get _boilerhouses => _db.collection('boilerhouses');
@@ -57,570 +33,294 @@ class FirebaseService {
   CollectionReference<Map<String, dynamic>> get _instructions => _db.collection('instructions');
   CollectionReference<Map<String, dynamic>> get _drawings => _db.collection('drawings');
   CollectionReference<Map<String, dynamic>> get _changeLogs => _db.collection('changeLogs');
-
-  /// Returns IDs of all admin and co-admin users.
-  Future<List<String>> _getAdminIds() async {
-    final snap = await _users.where('role', whereIn: ['admin', 'coAdmin']).get();
-    return snap.docs.map((d) => d.id).toList();
-  }
-
-
-
-  // в”Ђв”Ђ Init / seed в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  /// Seeds default data on first run if collections are empty.
-  Future<void> seedIfEmpty() async {
-    final bhExists = await _boilerhouses.limit(1).get();
-    if (bhExists.docs.isEmpty) {
-      await _seedBoilerhousesFromPassports();
-    }
-    await Future.wait([
-      _seedCollection(_equipment, seed.sampleEquipment, _equipmentToMap),
-      _seedCollection(_instructions, seed.sampleInstructions, _instructionToMap),
-      _seedCollection(_drawings, seed.sampleDrawings, _drawingToMap),
-    ]);
-  }
-
-  Future<void> _seedBoilerhousesFromPassports() async {
-    final batch = _db.batch();
-    for (final data in boilerhouseSeedData) {
-      final id = data['id'] as String;
-      batch.set(_boilerhouses.doc(id), data);
-    }
-    await _trackWrite(batch.commit());
-  }
-
-  Future<void> _seedCollection<T>(
-    CollectionReference<Map<String, dynamic>> col,
-    List<T> items,
-    Map<String, dynamic> Function(T) toMap,
-  ) async {
-    final existing = await col.limit(1).get();
-    if (existing.docs.isNotEmpty) return;
-    final batch = _db.batch();
-    for (final item in items) {
-      final map = toMap(item);
-      final id = map['id'] as String;
-      batch.set(col.doc(id), map);
-    }
-    await _trackWrite(batch.commit());
-  }
-
-  // в”Ђв”Ђ Auth в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
+  CollectionReference<Map<String, dynamic>> get _shifts => _db.collection('shifts');
+  CollectionReference<Map<String, dynamic>> get _auditLog => _db.collection('audit_log');
+  Future<T> _trackWrite<T>(Future<T> write) => FirestoreSyncTracker.instance.trackWrite(write);
   String? get currentUid => _auth.currentUser?.uid;
-
-  /// Persistent stream вЂ” emits user state across app restarts.
   Stream<User?> get authStateChanges => _auth.authStateChanges();
+  String _toEmail(String login) => '${SecurityPolicy.normalizeLogin(login)}@khorazm-issiklik.app';
 
+  /// Compatibility only: imports require a reviewed operator, never client seeding.
+  Future<void> seedIfEmpty() async {}
   Future<AppUser?> signIn(String login, String password) async {
     try {
-      final email = _toEmail(login);
-      final cred = await _auth.signInWithEmailAndPassword(email: email, password: password);
-      final uid = cred.user?.uid;
-      if (uid == null) return null;
-      return await _fetchUser(uid);
-    } on FirebaseAuthException {
-      return null;
-    } on FirebaseException {
-      // Firestore denied/failed the profile fetch — treat as failed login
-      // instead of hanging the UI with an uncaught error.
-      return null;
-    }
+      final cred = await _auth.signInWithEmailAndPassword(email: _toEmail(login), password: password);
+      final user = await fetchUser(cred.user!.uid).timeout(const Duration(seconds: 20));
+      if (user == null) await signOut();
+      return user;
+    } catch (_) { await signOut(); return null; }
   }
-
-  Future<String?> register({
-    required String login,
-    required String password,
-    required String firstName,
-    required String lastName,
-    required String phone,
-  }) =>
-      _observeOperation(_register(
-        login: login,
-        password: password,
-        firstName: firstName,
-        lastName: lastName,
-        phone: phone,
-      ));
-
-  Future<String?> _register({
-    required String login,
-    required String password,
-    required String firstName,
-    required String lastName,
-    required String phone,
-  }) async {
-    // Security rules only allow Firestore reads to authenticated users, so
-    // uniqueness checks must happen AFTER the auth account is created.
-    // Login uniqueness is guaranteed by Firebase Auth (email-already-in-use).
-    final User authUser;
-    try {
-      final email = _toEmail(login);
-      final cred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
-      authUser = cred.user!;
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'email-already-in-use') return 'Bu login band';
-      return e.message ?? 'Xatolik yuz berdi';
+  Future<String?> register({required String login, required String password,
+    required String firstName, required String lastName, required String phone}) async {
+    login = SecurityPolicy.normalizeLogin(login); phone = SecurityPolicy.normalizePhone(phone);
+    firstName = firstName.trim(); lastName = lastName.trim();
+    if (!SecurityPolicy.validLogin(login) || !SecurityPolicy.validPhone(phone) ||
+        firstName.isEmpty || firstName.length > 80 || lastName.isEmpty || lastName.length > 80) {
+      return 'Login, ism yoki telefon formati noto‘g‘ri';
     }
-
+    if (password.length < 12) return 'Parol kamida 12 belgidan iborat bo‘lsin';
     try {
-      final uid = authUser.uid;
-
-      final phoneCheck = await _users.where('phone', isEqualTo: phone).limit(1).get();
-      if (phoneCheck.docs.isNotEmpty) {
-        await authUser.delete();
-        return 'Bu telefon raqami ro\'yxatdan o\'tgan';
-      }
-
-      final allUsers = await _users.limit(1).get();
-      final isFirstUser = allUsers.docs.isEmpty;
-
-      await _trackWrite(_users.doc(uid).set({
-        'id': uid,
-        'login': login,
-        'firstName': firstName,
-        'lastName': lastName,
-        'phone': phone,
-        'position': '',
-        'photoUrl': '',
-        'role': isFirstUser ? 'admin' : 'member',
-        'status': isFirstUser ? 'active' : 'pending',
-        'boilerhouseIds': <String>[],
-        'createdAt': FieldValue.serverTimestamp(),
-      }));
-
-      if (!isFirstUser) {
-        try {
-          final adminIds = await _getAdminIds();
-          await _trackWrite(_notifications.add({
-            'type': 'system',
-            'title': 'Yangi ro\'yxatdan o\'tish',
-            'message': '$firstName $lastName ro\'yxatdan o\'tish so\'rovi yubordi',
-            'recipientIds': adminIds,
-            'isRead': false,
-            'relatedUserId': uid,
-            'createdAt': FieldValue.serverTimestamp(),
-            'sentAt': FieldValue.serverTimestamp(),
-          }));
-        } on FirebaseException {
-          // Best-effort: registration itself succeeded, admins will still
-          // see the user in the pending list.
-        }
-      }
-
-      return null;
-    } on FirebaseException {
-      // Firestore step failed — roll back the auth account so the login is
-      // not left half-registered.
+      User user;
       try {
-        await authUser.delete();
-      } catch (_) {}
-      return 'Xatolik yuz berdi. Qayta urinib ko\'ring';
-    }
-  }
-
-  Future<void> signOut() => _auth.signOut();
-
-  Future<void> waitForPendingWrites() =>
-      _trackWrite(_db.waitForPendingWrites());
-
-  /// Request password reset вЂ” notifies admins.
-  // Runs unauthenticated (forgot-password screen), so it cannot look the
-  // user up in Firestore; it just files a system notification with the
-  // login for admins to act on.
-  Future<String?> requestPasswordReset(String login) async {
-    try {
-      _trackWrite(_notifications.add({
-        'type': 'system',
-        'title': 'Parol tiklash so\'rovi',
-        'message': '${login.trim()} parolni tiklashni so\'radi',
-        'recipientIds': <String>[],
-        'isRead': false,
-        'createdAt': FieldValue.serverTimestamp(),
-        'sentAt': FieldValue.serverTimestamp(),
+        user = (await _auth.createUserWithEmailAndPassword(email: _toEmail(login), password: password)).user!;
+      } on FirebaseAuthException catch (error) {
+        if (error.code != 'email-already-in-use') rethrow;
+        user = (await _auth.signInWithEmailAndPassword(email: _toEmail(login), password: password)).user!;
+      }
+      final uid = user.uid;
+      await _trackWrite(_db.runTransaction((transaction) async {
+        final access = await transaction.get(_access.doc(uid));
+        final profile = await transaction.get(_users.doc(uid));
+        if (access.exists || profile.exists) {
+          final a = access.data();
+          final p = profile.data();
+          if (a != null && p != null && a['role'] == 'member' && a['status'] == 'pending' &&
+              p['role'] == 'member' && p['status'] == 'pending' && p['id'] == uid &&
+              p['login'] == login && p['phone'] == phone && p['firstName'] == firstName && p['lastName'] == lastName &&
+              (a['boilerhouseIds'] as List?)?.isEmpty == true &&
+              a['sessionValidAfter'] == Timestamp.fromMillisecondsSinceEpoch(0)) {
+            return;
+          }
+          throw StateError('Hisob administrator tekshiruvini talab qiladi');
+        }
+        final data = <String,dynamic>{'id':uid,'login':login,'firstName':firstName,'lastName':lastName,
+          'phone':phone,'position':'','photoUrl':'','role':'member','status':'pending',
+          'boilerhouseIds':<String>[],'sessionValidAfter':Timestamp.fromMillisecondsSinceEpoch(0),
+          'createdAt':FieldValue.serverTimestamp()};
+        transaction.set(_users.doc(uid),data); transaction.set(_directory.doc(uid),data);
+        transaction.set(_access.doc(uid),_authority(data)); transaction.set(_profiles.doc(uid),_profile(data));
+        transaction.set(_db.collection('phoneClaims').doc(phone),{'uid':uid,'createdAt':FieldValue.serverTimestamp()});
       }));
       return null;
+    } on FirebaseAuthException {
+      return 'Ro‘yxatdan o‘tish bajarilmadi. Mavjud login bo‘lsa, uning parolidan foydalaning.';
     } on FirebaseException {
-      return 'Xatolik yuz berdi. Qayta urinib ko\'ring';
+      return 'Ro‘yxatdan o‘tish bajarilmadi. Telefon band yoki ruxsat/tarmoq mavjud emas. Administratorga murojaat qiling.';
+    } on StateError {
+      return 'Hisob ma’lumotlarini administrator tekshirishi kerak. Mavjud hisob o‘zgartirilmadi.';
+    } finally {
+      await signOut();
     }
   }
-
-  /// Change password вЂ” requires current password for re-authentication.
-  /// Returns null on success, error string on failure.
-  Future<String?> changePassword({
-    required String currentPassword,
-    required String newPassword,
-  }) async {
-    final user = _auth.currentUser;
-    if (user == null || user.email == null) return 'Tizimga kirilmagan';
-
+  Future<void> signOut() async {
+    try { await _auth.signOut(); } finally { FirestoreSyncTracker.instance.reset(); }
+  }
+  Future<void> waitForPendingWrites() => _trackWrite(_db.waitForPendingWrites());
+  Future<String?> requestPasswordReset(String login) async =>
+    'Parolni tiklash uchun administratorga murojaat qiling. Login haqiqiy email emas; shaxsni tekshirib operator tiklaydi.';
+  Future<void> adminResetPassword(String login, String newPassword) async => throw UnsupportedError(
+    'Parol ilovadan tiklanmaydi. Shaxsni tasdiqlab, vakolatli Firebase Auth operatoriga murojaat qiling.');
+  Future<String?> deleteAccount(String uid) async =>
+    'Hisobni yopish uchun administratorga murojaat qiling. Operator kirishni bekor qiladi va jurnal tarixini saqlaydi.';
+  Future<String?> changePassword({required String currentPassword,required String newPassword}) async {
+    final u = _auth.currentUser;
+    if (u == null || u.email == null) return 'Tizimga kirilmagan';
+    if (newPassword.length < 12) return 'Parol kamida 12 belgidan iborat bo‘lsin';
     try {
-      final cred = EmailAuthProvider.credential(email: user.email!, password: currentPassword);
-      await user.reauthenticateWithCredential(cred);
-
-      await user.updatePassword(newPassword);
-      return null;
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
-        return 'Joriy parol noto\'g\'ri';
-      }
-      if (e.code == 'weak-password') return 'Parol juda zaif';
-      return e.message ?? 'Xatolik yuz berdi';
-    }
+      await u.reauthenticateWithCredential(EmailAuthProvider.credential(email:u.email!,password:currentPassword));
+      await u.updatePassword(newPassword); return null;
+    } on FirebaseAuthException { return 'Parol yangilanmadi. Joriy parol va tarmoqni tekshiring.'; }
   }
-
-  // в”Ђв”Ђ Users в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Future<AppUser?> _fetchUser(String uid) async {
-    final doc = await _users.doc(uid).get();
-    if (!doc.exists) return null;
+  /// Never authorize from cached grants or legacy users.role alone.
+  Future<AppUser?> fetchUser(String uid) async {
+    if (currentUid != uid) return null;
+    return _validatedUser(uid, await _access.doc(uid).get(_server));
+  }
+  Future<AppUser?> _validatedUser(String uid, DocumentSnapshot<Map<String,dynamic>> a) async {
+    final d = a.data(); final auth = _auth.currentUser;
+    if (d == null || auth?.uid != uid || a.metadata.isFromCache || a.metadata.hasPendingWrites) return null;
+    if (!['admin','coAdmin','member'].contains(d['role']) || !['active','pending','blocked'].contains(d['status'])) return null;
+    final cutoff = d['sessionValidAfter']; final token = await auth!.getIdTokenResult(); final authTime = token.authTime;
+    if (cutoff is! Timestamp || authTime == null || authTime.isBefore(cutoff.toDate())) return null;
+    final doc = await _users.doc(uid).get(_server); final data = doc.data();
+    if (data == null || data['role'] != d['role'] || data['status'] != d['status'] || data['sessionValidAfter'] != cutoff ||
+        !listEquals(data['boilerhouseIds'] as List?,d['boilerhouseIds'] as List?)) return null;
     return _userFromDoc(doc);
   }
-
-  /// Public вЂ” used by auth_providers.restoreSession.
-  Future<AppUser?> fetchUser(String uid) => _fetchUser(uid);
-
-  Stream<AppUser?> currentUserStream(String uid) {
-    return _users.doc(uid).snapshots(includeMetadataChanges: true).map((doc) {
-      _reportSync(
-        'current-user-$uid',
-        isFromCache: doc.metadata.isFromCache,
-        hasPendingWrites: doc.metadata.hasPendingWrites,
-      );
-      return doc.exists ? _userFromDoc(doc) : null;
-    }).distinct(_sameAppUser);
-  }
-
-  bool _sameAppUser(AppUser? previous, AppUser? current) {
-    if (previous == null || current == null) return previous == current;
-    return previous.id == current.id &&
-        previous.login == current.login &&
-        previous.firstName == current.firstName &&
-        previous.lastName == current.lastName &&
-        previous.phone == current.phone &&
-        previous.position == current.position &&
-        previous.photoUrl == current.photoUrl &&
-        previous.role == current.role &&
-        previous.status == current.status &&
-        listEquals(previous.boilerhouseIds, current.boilerhouseIds);
-  }
-
-  Stream<List<AppUser>> allUsersStream() {
-    return _users.orderBy('createdAt').snapshots().map(
-          (snap) => snap.docs.map(_userFromDoc).toList(),
-        );
-  }
-
-  Future<void> approveUser(String uid) =>
-      _observeOperation(_approveUser(uid));
-
-  Future<void> _approveUser(String uid) async {
-    await _trackWrite(_users.doc(uid).update({'status': 'active'}));
-    final doc = await _users.doc(uid).get();
-    final data = doc.data()!;
-    final name = '${data['firstName']} ${data['lastName']}';
-    await _trackWrite(_notifications.add({
-      'type': 'informational',
-      'title': 'Ro\'yxatdan o\'tish tasdiqlandi',
-      'message': '$name, sizning so\'rovingiz tasdiqlandi.',
-      'recipientIds': [uid],
-      'isRead': false,
-      'createdAt': FieldValue.serverTimestamp(),
-      'sentAt': FieldValue.serverTimestamp(),
-    }));
-  }
-
-  Future<void> declineUser(String uid) =>
-      _trackWrite(_users.doc(uid).update({'status': 'blocked'}));
-
-  /// Block / unblock вЂ” same as declineUser but more clearly named
-  Future<void> banUser(String uid) =>
-      _trackWrite(_users.doc(uid).update({'status': 'blocked'}));
-  Future<void> unbanUser(String uid) =>
-      _trackWrite(_users.doc(uid).update({'status': 'active'}));
-
-  Future<void> changeRole(String uid, UserRole role) =>
-      _trackWrite(_users.doc(uid).update({'role': _roleToStr(role)}));
-
-  Future<void> updateUserPosition(String uid, String position) =>
-      _trackWrite(_users.doc(uid).update({'position': position}));
-
-  Future<void> updateUserPhoto(String uid, String photoUrl) =>
-      _trackWrite(_users.doc(uid).update({'photoUrl': photoUrl}));
-
-  /// Stores this device's FCM token on the user's profile (merge write, so
-  /// it works regardless of which other fields exist).
-  Future<void> saveFcmToken(String uid, String token) =>
-      _trackWrite(_users.doc(uid).set({'fcmToken': token}, SetOptions(merge: true)));
-
-  Future<void> clearFcmToken(String uid) =>
-      _trackWrite(_users.doc(uid).update({'fcmToken': FieldValue.delete()}));
-
-  /// Deletes the user's profile doc, then the auth account. If the auth
-  /// delete is rejected (e.g. requires recent login), the profile doc is
-  /// restored so the account is not left half-deleted.
-  /// Returns null on success, error text on failure.
-  Future<String?> deleteAccount(String uid) =>
-      _observeOperation(_deleteAccount(uid));
-
-  Future<String?> _deleteAccount(String uid) async {
-    final doc = await _users.doc(uid).get();
-    final backup = doc.data();
-    await _trackWrite(_users.doc(uid).delete());
-    try {
-      await _auth.currentUser?.delete();
-      return null;
-    } on FirebaseAuthException catch (e) {
-      if (backup != null) {
-        await _trackWrite(_users.doc(uid).set(backup)).catchError((_) {});
-      }
-      if (e.code == 'requires-recent-login') {
-        return 'Qayta kirib, so\'ng qayta urinib ko\'ring';
-      }
-      return e.message ?? 'Xatolik yuz berdi';
+  Stream<AppUser?> currentUserStream(String uid) =>
+    _access.doc(uid).snapshots(includeMetadataChanges:true).asyncMap((doc) async {
+      FirestoreSyncTracker.instance.reportSnapshot(source:'current-user-$uid',isFromCache:doc.metadata.isFromCache,hasPendingWrites:doc.metadata.hasPendingWrites);
+      if (doc.metadata.isFromCache || doc.metadata.hasPendingWrites) return fetchUser(uid);
+      return _validatedUser(uid,doc);
+    });
+  Future<AppUser> _requireUser({bool manager=false,bool admin=false}) async {
+    final uid = currentUid; final u = uid == null ? null : await fetchUser(uid);
+    if (!SecurityPolicy.isActive(u) || (manager && !SecurityPolicy.isManager(u)) || (admin && u!.role != UserRole.admin)) {
+      throw StateError('Ruxsat yo‘q. Qayta tizimga kiring.');
     }
+    return u!;
   }
-
-  /// Admin resets a user's password by re-creating their Firebase Auth account.
-  /// Note: This signs out the admin temporarily.
-  Future<void> adminResetPassword(String login, String newPassword) =>
-      _observeOperation(_adminResetPassword(login, newPassword));
-
-  Future<void> _adminResetPassword(String login, String newPassword) async {
-    final snap = await _users.where('login', isEqualTo: login).limit(1).get();
-    if (snap.docs.isEmpty) return;
-
-    final uid = snap.docs.first.id;
-
-    await _trackWrite(_db.collection('passwordResets').doc(uid).set({
-      'login': login,
-      'newPassword': newPassword,
-      'createdAt': FieldValue.serverTimestamp(),
-    }));
-
-    await _trackWrite(_notifications.add({
-      'type': 'informational',
-      'title': 'Parol yangilandi',
-      'message': 'Admin parolingizni yangiladi. Tizimga qayta kiring.',
-      'recipientIds': [uid],
-      'isRead': false,
-      'createdAt': FieldValue.serverTimestamp(),
-      'sentAt': FieldValue.serverTimestamp(),
+  Map<String,dynamic> _authority(Map<String,dynamic> d) => {'role':d['role'],'status':d['status'],'boilerhouseIds':d['boilerhouseIds'],'sessionValidAfter':d['sessionValidAfter']};
+  Map<String,dynamic> _profile(Map<String,dynamic> d) => {for (final k in ['id','firstName','lastName','position','photoUrl','role','status']) k:d[k]};
+  Stream<List<AppUser>> allUsersStream({AppUser? user}) {
+    if (!SecurityPolicy.isActive(user)) return Stream.value([]);
+    final Query<Map<String,dynamic>> q = SecurityPolicy.isManager(user) ? _directory.orderBy('createdAt') : _profiles.where('status',isEqualTo:'active');
+    return q.snapshots().map((s)=>s.docs.map(_userFromDoc).toList());
+  }
+  Future<void> _editUser(String uid, Map<String,dynamic> changes,{bool selfPosition=false}) async {
+    final actor = await _requireUser(admin:!selfPosition);
+    if (uid == actor.id && !selfPosition) throw StateError('O‘z vakolatingizni o‘zgartirib bo‘lmaydi');
+    await _trackWrite(_db.runTransaction((tx) async {
+      final ref = selfPosition && uid == actor.id ? _users.doc(uid) : _directory.doc(uid);
+      final snap = await tx.get(ref); if (!snap.exists) throw StateError('Foydalanuvchi topilmadi');
+      final data = {...snap.data()!,...changes};
+      if (!selfPosition && snap.data()!['role'] == 'admin') throw StateError('Admin vakolati faqat operator orqali o‘zgartiriladi');
+      tx.set(_users.doc(uid),data); tx.set(_directory.doc(uid),data); tx.set(_profiles.doc(uid),_profile(data));
+      if (!selfPosition) tx.set(_access.doc(uid),_authority(data));
     }));
   }
-
-  // в”Ђв”Ђ Journal в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Stream<List<JournalEntry>> journalStream() {
-    return _journal.orderBy('eventDateTime', descending: true).limit(100)
-        .snapshots().map((snap) => snap.docs.map(_entryFromDoc).toList());
+  Future<void> approveUser(String uid) => _editUser(uid,{'status':'active'});
+  Future<void> declineUser(String uid) => banUser(uid);
+  Future<void> banUser(String uid) => _editUser(uid,{'status':'blocked','sessionValidAfter':FieldValue.serverTimestamp()});
+  Future<void> unbanUser(String uid) => _editUser(uid,{'status':'active'});
+  Future<void> changeRole(String uid,UserRole role) async {
+    if (role == UserRole.admin) throw UnsupportedError('Admin tayinlash faqat tekshirilgan operator orqali bajariladi');
+    await _editUser(uid,{'role':_roleToStr(role)});
   }
-
-  Future<void> addJournalEntry(JournalEntry entry) =>
-      _observeOperation(_addJournalEntry(entry));
-
-  Future<void> _addJournalEntry(JournalEntry entry) async {
-    await _trackWrite(_journal.doc(entry.id).set(_entryToMap(entry)));
-    try {
-      await _trackWrite(_notifications.add({
-        'type': 'informational',
-        'title': 'Yangi jurnal yozuvi',
-        'message': '${entry.authorName}: ${entry.title}',
-        'recipientIds': <String>[],
-        'isRead': false,
-        'createdAt': FieldValue.serverTimestamp(),
-        'sentAt': FieldValue.serverTimestamp(),
-      }));
-    } on FirebaseException {
-      // The broadcast is best-effort; the journal entry itself is saved.
-    }
+  Future<void> assignBoilerhouses(String uid,List<String> ids) async {
+    if (ids.length > 30 || ids.toSet().length != ids.length) throw ArgumentError('Ko‘pi bilan 30 ta takrorlanmas qozonxona');
+    await _requireUser(admin:true);
+    for (final id in ids) { if (!(await _boilerhouses.doc(id).get(_server)).exists) throw ArgumentError('Qozonxona topilmadi'); }
+    await _editUser(uid,{'boilerhouseIds':ids});
   }
-
-  Future<void> updateJournalEntry(JournalEntry entry) =>
-      _trackWrite(_journal.doc(entry.id).update(_entryToMap(entry)));
-
-  Future<void> deleteJournalEntry(String id) =>
-      _trackWrite(_journal.doc(id).delete());
-
-  // в”Ђв”Ђ Notifications в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
+  Future<void> updateUserPosition(String uid,String position) => _editUser(uid,{'position':position.trim()},selfPosition:uid == currentUid);
+  Future<void> updateUserPhoto(String uid,String photoUrl) async => throw UnsupportedError('Fayl yuklash o‘chirilgan');
+  Future<void> saveFcmToken(String uid,String token) async => throw UnsupportedError('Spark rejimida server push mavjud emas');
+  Future<void> clearFcmToken(String uid) async {} // No client token collection exists.
+  Query<Map<String,dynamic>>? _scope(CollectionReference<Map<String,dynamic>> col,AppUser? user,{bool documentIds=false}) {
+    if (!SecurityPolicy.isActive(user) || user!.id != currentUid) return null;
+    if (SecurityPolicy.isManager(user)) return col;
+    final ids = user.boilerhouseIds.toSet().toList();
+    if (ids.isEmpty || ids.length > 30) return null;
+    return col.where(documentIds ? FieldPath.documentId : 'boilerHouseId',whereIn:ids);
+  }
+  Stream<List<T>> _scopedStream<T>(CollectionReference<Map<String,dynamic>> col,AppUser? user,
+      T Function(DocumentSnapshot<Map<String,dynamic>>) mapper,{bool documentIds=false}) {
+    final q = _scope(col,user,documentIds:documentIds);
+    return q == null ? Stream.value([]) : q.snapshots().map((s)=>s.docs.map(mapper).toList());
+  }
+  Stream<List<BoilerHouse>> boilerhousesStream({AppUser? user}) => _scopedStream(_boilerhouses,user,_boilerhouseFromDoc,documentIds:true);
+  Stream<List<Equipment>> equipmentStream({AppUser? user}) => _scopedStream(_equipment,user,_equipmentFromDoc);
+  Stream<List<Drawing>> drawingsStream({AppUser? user}) => _scopedStream(_drawings,user,_drawingFromDoc);
+  Stream<List<Instruction>> instructionsStream({AppUser? user}) => !SecurityPolicy.isActive(user)
+    ? Stream.value([]) : _instructions.snapshots().map((s)=>s.docs.map(_instructionFromDoc).toList());
+  Stream<List<JournalEntry>> journalStream({AppUser? user}) {
+    final q = _scope(_journal,user);
+    return q == null ? Stream.value([]) : q.where('deleted',isEqualTo:false).orderBy('eventDateTime',descending:true).limit(100)
+      .snapshots().map((s)=>s.docs.map(_entryFromDoc).toList());
+  }
+  Future<void> addJournalEntry(JournalEntry e) async {
+    final u = await _requireUser();
+    if (e.photoPaths.isNotEmpty) throw UnsupportedError('Fayl yuklash o‘chirilgan');
+    await _trackWrite(_journal.doc(e.id).set({..._entryToMap(e),'authorId':u.id,'authorName':u.fullName,
+      'createdAt':FieldValue.serverTimestamp(),'updatedAt':FieldValue.serverTimestamp(),'version':1,'historyId':'','deleted':false}));
+  }
+  Future<void> updateJournalEntry(JournalEntry e) => _reviseJournal(e.id,entry:e);
+  Future<void> deleteJournalEntry(String id) => _reviseJournal(id,deleted:true);
+  Future<void> _reviseJournal(String id,{JournalEntry? entry,bool deleted=false}) async {
+    final u = await _requireUser(); final ref = _journal.doc(id); final history = ref.collection('history').doc();
+    await _trackWrite(_db.runTransaction((tx) async {
+      final snap = await tx.get(ref); final before = snap.data();
+      if (before == null || before['deleted'] != false) throw StateError('Yozuv mavjud emas');
+      final version = (before['version'] as int) + 1;
+      final changes = <String,dynamic>{'updatedAt':FieldValue.serverTimestamp(),'version':version,'historyId':history.id,'deleted':deleted};
+      if (entry != null) {
+        if (entry.photoPaths.isNotEmpty) throw UnsupportedError('Fayl yuklash o‘chirilgan');
+        changes.addAll({'category':entry.category,'title':entry.title,'description':entry.description,
+          'importance':_importanceToStr(entry.importance),'status':_jStatusToStr(entry.status)});
+      }
+      tx.update(ref,changes);
+      tx.set(history,{'journalId':id,'boilerHouseId':before['boilerHouseId'],'actorId':u.id,'createdAt':FieldValue.serverTimestamp(),
+        'operation':deleted?'delete':'update','before':before,'version':version});
+    }));
+  }
   Stream<List<AppNotification>> notificationsStream(String userId) {
-    return _notifications.orderBy('sentAt', descending: true).limit(50)
-        .snapshots().map((snap) => snap.docs.map(_notifFromDoc).where((n) {
-              return n.recipientIds.isEmpty || n.recipientIds.contains(userId);
-            }).toList());
+    if (userId != currentUid) return Stream.value([]);
+    return _notifications.where('recipientId',isEqualTo:userId).orderBy('sentAt',descending:true).limit(100)
+      .snapshots().map((s)=>s.docs.map(_notifFromDoc).toList());
   }
-
-  Future<void> markNotificationRead(String id) =>
-      _trackWrite(_notifications.doc(id).update({'isRead': true}));
-
-  Future<void> markAllNotificationsRead(String userId) =>
-      _observeOperation(_markAllNotificationsRead(userId));
-
-  Future<void> _markAllNotificationsRead(String userId) async {
-    final snap = await _notifications.where('isRead', isEqualTo: false).get();
-    final batch = _db.batch();
-    for (final doc in snap.docs) {
-      final recipients = List<String>.from(doc.data()['recipientIds'] ?? []);
-      if (recipients.isEmpty || recipients.contains(userId)) {
-        batch.update(doc.reference, {'isRead': true});
-      }
+  Future<void> markNotificationRead(String id) => _trackWrite(_notifications.doc(id).update({'isRead':true}));
+  Future<void> markAllNotificationsRead(String userId) async {
+    if (userId != currentUid) throw StateError('Ruxsat yo‘q');
+    while (true) {
+      final s = await _notifications.where('recipientId',isEqualTo:userId).where('isRead',isEqualTo:false).limit(100).get(_server);
+      if (s.docs.isEmpty) return;
+      final batch = _db.batch(); for (final d in s.docs) { batch.update(d.reference,{'isRead':true}); }
+      await _trackWrite(batch.commit());
     }
-    await _trackWrite(batch.commit());
   }
-
-  Future<void> broadcastNotification({
-    required String title,
-    required String message,
-  }) =>
-      _observeOperation(_broadcastNotification(title: title, message: message));
-
-  Future<void> _broadcastNotification({
-    required String title,
-    required String message,
-  }) async {
-    await _trackWrite(_notifications.add({
-      'type': 'important',
-      'title': title,
-      'message': message,
-      'recipientIds': <String>[],
-      'isRead': false,
-      'createdAt': FieldValue.serverTimestamp(),
-      'sentAt': FieldValue.serverTimestamp(),
-    }));
+  Future<void> broadcastNotification({required String title,required String message}) async {
+    await _requireUser(manager:true);
+    final snap = await _access.where('status',isEqualTo:'active').limit(101).get(_server);
+    if (snap.docs.length > 100) throw StateError('Bir yuborishda ko‘pi bilan 100 oluvchi. Alohida guruh tanlang.');
+    if (snap.docs.isEmpty) throw StateError('Faol oluvchi topilmadi');
+    await sendNotification(title:title,message:message,recipientIds:snap.docs.map((d)=>d.id).toList());
   }
-
-  // в”Ђв”Ђ Boilerhouses в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Stream<List<BoilerHouse>> boilerhousesStream() {
-    return _boilerhouses.orderBy('name').snapshots().map(
-          (snap) => snap.docs.map(_boilerhouseFromDoc).toList(),
-        );
-  }
-
-  // в”Ђв”Ђ Equipment в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Stream<List<Equipment>> equipmentStream() {
-    return _equipment.orderBy('name').snapshots().map(
-          (snap) => snap.docs.map(_equipmentFromDoc).toList(),
-        );
-  }
-
-  // в”Ђв”Ђ Instructions в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Stream<List<Instruction>> instructionsStream() {
-    return _instructions.snapshots().map(
-          (snap) => snap.docs.map(_instructionFromDoc).toList(),
-        );
-  }
-
-  // в”Ђв”Ђ Drawings в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Stream<List<Drawing>> drawingsStream() {
-    return _drawings.snapshots().map(
-          (snap) => snap.docs.map(_drawingFromDoc).toList(),
-        );
-  }
-
-  // в”Ђв”Ђ CRUD: Boilerhouses / Instructions / Drawings в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Future<void> addBoilerhouse(BoilerHouse b) =>
-      _trackWrite(_boilerhouses.doc(b.id).set(_boilerhouseToMap(b)));
-  Future<void> updateBoilerhouse(BoilerHouse b) =>
-      _trackWrite(_boilerhouses.doc(b.id).update(_boilerhouseToMap(b)));
-  Future<void> deleteBoilerhouse(String id) =>
-      _trackWrite(_boilerhouses.doc(id).delete());
-
-  Future<void> addInstruction(Instruction i) =>
-      _trackWrite(_instructions.doc(i.id).set(_instructionToMap(i)));
-  Future<void> updateInstruction(Instruction i) =>
-      _trackWrite(_instructions.doc(i.id).update(_instructionToMap(i)));
-  Future<void> deleteInstruction(String id) =>
-      _trackWrite(_instructions.doc(id).delete());
-
-  Future<void> addDrawing(Drawing d) =>
-      _trackWrite(_drawings.doc(d.id).set(_drawingToMap(d)));
-  Future<void> updateDrawing(Drawing d) =>
-      _trackWrite(_drawings.doc(d.id).update(_drawingToMap(d)));
-  Future<void> deleteDrawing(String id) =>
-      _trackWrite(_drawings.doc(id).delete());
-
-  // в”Ђв”Ђ ChangeLog в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  Stream<List<ChangeLogEntry>> changeLogsStream(String boilerHouseId) {
-    return _changeLogs
-        .where('boilerHouseId', isEqualTo: boilerHouseId)
-        .orderBy('createdAt', descending: true)
-        .limit(50)
-        .snapshots()
-        .map((snap) => snap.docs.map(_changeLogFromDoc).toList());
-  }
-
-  Future<void> addChangeLog(ChangeLogEntry entry) =>
-      _trackWrite(_changeLogs.doc(entry.id).set(_changeLogToMap(entry)));
-
-  Future<void> deleteChangeLog(String id) =>
-      _observeOperation(_deleteChangeLog(id));
-
-  Future<void> _deleteChangeLog(String id) async {
-    await _trackWrite(_changeLogs.doc(id).delete());
-    final reactions = await _changeLogs.doc(id).collection('reactions').get();
-    if (reactions.docs.isNotEmpty) {
+  Future<void> sendNotification({required String title,required String message,required List<String> recipientIds}) async {
+    final u = await _requireUser(manager:true);
+    if (recipientIds.isEmpty || recipientIds.length > 100 || recipientIds.toSet().length != recipientIds.length) throw ArgumentError('1–100 ta takrorlanmas oluvchi talab qilinadi');
+    if (title.trim().isEmpty || title.length > 200 || message.trim().isEmpty || message.length > 4000) throw ArgumentError('Xabar matni noto‘g‘ri');
+    // One recipient per document; <=8 distinct recipient access lookups per batch.
+    for (var i=0;i<recipientIds.length;i+=8) {
       final batch = _db.batch();
-      for (final doc in reactions.docs) {
-        batch.delete(doc.reference);
+      for (final uid in recipientIds.skip(i).take(8)) {
+        batch.set(_notifications.doc(),{'recipientId':uid,'senderId':u.id,'type':'important','title':title,'message':message,
+          'isRead':false,'createdAt':FieldValue.serverTimestamp(),'sentAt':FieldValue.serverTimestamp()});
       }
       await _trackWrite(batch.commit());
     }
   }
-
-  Stream<List<ChangeLogReaction>> reactionsStream(String changeLogId) {
-    return _changeLogs
-        .doc(changeLogId)
-        .collection('reactions')
-        .orderBy('createdAt')
-        .snapshots()
-        .map((snap) => snap.docs.map(_reactionFromDoc).toList());
+  Future<void> addBoilerhouse(BoilerHouse b) => _trackWrite(_boilerhouses.doc(b.id).set(_boilerhouseToMap(b)));
+  Future<void> updateBoilerhouse(BoilerHouse b) => _trackWrite(_boilerhouses.doc(b.id).update(_boilerhouseToMap(b)));
+  Future<void> deleteBoilerhouse(String id) => _trackWrite(_boilerhouses.doc(id).delete());
+  Future<void> addEquipment(Equipment e) => _trackWrite(_equipment.doc(e.id).set(_equipmentToMap(e)));
+  Future<void> updateEquipment(Equipment e) => _trackWrite(_equipment.doc(e.id).update(_equipmentToMap(e)));
+  Future<void> deleteEquipment(String id) => _trackWrite(_equipment.doc(id).delete());
+  Future<void> addInstruction(Instruction i) async {
+    final u = await _requireUser(manager:true);
+    await _trackWrite(_instructions.doc(i.id).set({..._instructionToMap(i),'authorId':u.id,
+      'createdAt':FieldValue.serverTimestamp(),'updatedAt':FieldValue.serverTimestamp()}));
   }
-
-  Future<void> addReaction(ChangeLogReaction reaction) =>
-      _trackWrite(_changeLogs
-          .doc(reaction.changeLogId)
-          .collection('reactions')
-          .doc(reaction.id)
-          .set(_reactionToMap(reaction)));
-
-  Future<void> deleteReaction(String changeLogId, String reactionId) =>
-      _trackWrite(
-        _changeLogs.doc(changeLogId).collection('reactions').doc(reactionId).delete(),
-      );
-
-  // в”Ђв”Ђ Storage uploads в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  /// Upload a file (photo/video) and return its download URL.
-  Future<String> uploadFile({
-    required File file,
-    required String folder,
-  }) async {
-    final ext = file.path.split('.').last;
-    final name = '${DateTime.now().millisecondsSinceEpoch}.$ext';
-    final ref = _storage.ref().child(folder).child(name);
-    final task = await ref.putFile(file);
-    return task.ref.getDownloadURL();
+  Future<void> updateInstruction(Instruction i) => _trackWrite(_instructions.doc(i.id).update({..._instructionToMap(i),'updatedAt':FieldValue.serverTimestamp()}));
+  Future<void> deleteInstruction(String id) => _trackWrite(_instructions.doc(id).delete());
+  void _validateDrawing(Drawing d) {
+    if (d.filePath.isNotEmpty && !SecurityPolicy.isBundledDrawing(d.filePath)) throw ArgumentError('Faqat tasdiqlangan ilova sxemalari ruxsat etilgan');
   }
-
-  Future<List<String>> uploadFiles({
-    required List<File> files,
-    required String folder,
-  }) async {
-    return Future.wait(files.map((f) => uploadFile(file: f, folder: folder)));
+  Future<void> addDrawing(Drawing d) async {
+    _validateDrawing(d); final u = await _requireUser(manager:true);
+    await _trackWrite(_drawings.doc(d.id).set({..._drawingToMap(d),'authorId':u.id,'addedAt':FieldValue.serverTimestamp()}));
   }
-
-  // в”Ђв”Ђ Helpers / mappers в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
-
-  String _toEmail(String login) => '$login@khorazm-issiklik.app';
-
+  Future<void> updateDrawing(Drawing d) async { _validateDrawing(d); await _trackWrite(_drawings.doc(d.id).update(_drawingToMap(d))); }
+  Future<void> deleteDrawing(String id) => _trackWrite(_drawings.doc(id).delete());
+  Stream<List<ChangeLogEntry>> changeLogsStream(String boilerHouseId) => _changeLogs.where('boilerHouseId',isEqualTo:boilerHouseId)
+    .orderBy('createdAt',descending:true).limit(50).snapshots().map((s)=>s.docs.map(_changeLogFromDoc).toList());
+  Future<void> addChangeLog(ChangeLogEntry e) async {
+    final u = await _requireUser();
+    if (e.photoUrls.isNotEmpty) throw UnsupportedError('Fayl yuklash o‘chirilgan');
+    await _trackWrite(_changeLogs.doc(e.id).set({..._changeLogToMap(e),'authorId':u.id,'authorName':u.fullName,'createdAt':FieldValue.serverTimestamp()}));
+  }
+  Future<void> deleteChangeLog(String id) async => throw UnsupportedError('Tarix o‘chirilmaydi; tuzatish yozuvini qo‘shing');
+  Stream<List<ChangeLogReaction>> reactionsStream(String id) => _changeLogs.doc(id).collection('reactions').orderBy('createdAt')
+    .snapshots().map((s)=>s.docs.map(_reactionFromDoc).toList());
+  Future<void> addReaction(ChangeLogReaction r) async {
+    final u = await _requireUser();
+    await _trackWrite(_changeLogs.doc(r.changeLogId).collection('reactions').doc(r.id).set({
+      ..._reactionToMap(r),'authorId':u.id,'authorName':u.fullName,'createdAt':FieldValue.serverTimestamp()}));
+  }
+  Future<void> deleteReaction(String id,String reactionId) async => throw UnsupportedError('Tarix o‘chirilmaydi; tuzatish izohini qo‘shing');
+  Future<String> uploadFile({required File file,required String folder}) async => throw UnsupportedError('Fayl yuklash o‘chirilgan. Maxfiy fayllar uchun operatorga murojaat qiling.');
+  Future<List<String>> uploadFiles({required List<File> files,required String folder}) async => throw UnsupportedError('Fayl yuklash o‘chirilgan');
+  Stream<List<Shift>> shiftsStream({required DateTime from,required DateTime to,AppUser? user}) {
+    final q = _scope(_shifts,user);
+    return q == null ? Stream.value([]) : q.where('date',isGreaterThanOrEqualTo:Timestamp.fromDate(from))
+      .where('date',isLessThan:Timestamp.fromDate(to)).orderBy('date').snapshots().map((s)=>s.docs.map(_shiftFromDoc).toList());
+  }
+  Future<void> addShift(Shift s) async {
+    final u = await _requireUser(manager:true);
+    await _trackWrite(_shifts.doc(s.id).set({..._shiftToMap(s),'createdBy':u.id,'createdAt':FieldValue.serverTimestamp()}));
+  }
+  Future<void> updateShift(Shift s) => _trackWrite(_shifts.doc(s.id).update(_shiftToMap(s)));
+  Future<void> deleteShift(String id) => _trackWrite(_shifts.doc(id).delete());
   AppUser _userFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data()!;
     return AppUser(
@@ -678,7 +378,7 @@ class FirebaseService {
       type: _notifTypeFromStr(d['type'] ?? 'informational'),
       title: d['title'] ?? '',
       message: d['message'] ?? '',
-      recipientIds: List<String>.from(d['recipientIds'] ?? []),
+      recipientIds: [d['recipientId'] as String],
       isRead: d['isRead'] ?? false,
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       sentAt: (d['sentAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
@@ -1002,27 +702,6 @@ class FirebaseService {
     }
   }
 
-  // ═══ Shifts ══════════════════════════════════════════════════════════════
-  CollectionReference<Map<String, dynamic>> get _shifts => _db.collection('shifts');
-
-  /// Shifts whose day falls in [from, to). Single-field range — no composite
-  /// index needed.
-  Stream<List<Shift>> shiftsStream({required DateTime from, required DateTime to}) {
-    return _shifts
-        .where('date', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
-        .where('date', isLessThan: Timestamp.fromDate(to))
-        .orderBy('date')
-        .snapshots()
-        .map((snap) => snap.docs.map(_shiftFromDoc).toList());
-  }
-
-  Future<void> addShift(Shift s) =>
-      _trackWrite(_shifts.doc(s.id).set(_shiftToMap(s)));
-  Future<void> updateShift(Shift s) =>
-      _trackWrite(_shifts.doc(s.id).update(_shiftToMap(s)));
-  Future<void> deleteShift(String id) =>
-      _trackWrite(_shifts.doc(id).delete());
-
   Shift _shiftFromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data()!;
     return Shift(
@@ -1052,7 +731,7 @@ class FirebaseService {
       };
 
   // ═══ Audit Log ═══════════════════════════════════════════════════════════
-  CollectionReference<Map<String, dynamic>> get _auditLog => _db.collection('audit_log');
+
 
   Future<void> logAudit(AuditEntry e) => _trackWrite(_auditLog.doc(e.id).set({
     'userId': e.userId,
@@ -1061,7 +740,7 @@ class FirebaseService {
     'targetType': e.targetType,
     'targetId': e.targetId,
     'targetName': e.targetName,
-    'createdAt': Timestamp.fromDate(e.createdAt),
+    'createdAt': FieldValue.serverTimestamp(),
   }));
 
   Stream<List<AuditEntry>> auditLogStream() {
@@ -1082,4 +761,5 @@ class FirebaseService {
       createdAt: (d['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
     );
   }
+
 }

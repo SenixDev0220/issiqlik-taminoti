@@ -27,7 +27,9 @@ Android SDK and JDK 17 are required for an APK build. Local SDK paths belong in 
 - Firestore persistence is configured in `lib/main.dart`. Text writes use the Firestore SDK offline queue and sync tracker. File/Storage uploads and Firebase Auth/Cloud Function operations are not guaranteed offline.
 - Firestore rules are in `firestore.rules` and default-deny unspecified collections. Update the rules whenever adding a collection or subcollection.
 - The first registration against an empty database becomes an active administrator; subsequent accounts start pending. Preserve the Firebase Auth / Firestore ordering in registration.
-- Shared screen surfaces and the bottom navigation are in `lib/src/core/glass.dart`; keep changes consistent with the existing UI rather than introducing a separate design system.
+- `lib/src/core/app_theme.dart` is the source of truth for the Liquid Glass palette and Material component themes. Shared screen backgrounds, cards, and bottom navigation are in `lib/src/core/glass.dart`; feature screens are wrapped by `GlassScaffold`.
+- The home dashboard in `lib/src/features/home/home_screen.dart` groups shortcuts and operational modules using existing providers. Derive displayed metrics from live models; do not hardcode operational data.
+- Keep tab-indicator motion transform-based and isolated by `RepaintBoundary`; avoid animated backdrop blur or full-screen opacity layers that require expensive GPU compositing on low-end Android devices.
 - Do not add generated Flutter output, APKs, local SDK configuration, signing keys, Firebase service-account files or IDE-local settings to commits.
 
 ## Verification

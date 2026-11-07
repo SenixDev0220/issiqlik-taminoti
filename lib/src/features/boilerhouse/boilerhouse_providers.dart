@@ -2,9 +2,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/boiler_house.dart';
 import '../../services/firebase_service.dart';
+import '../../core/app_state.dart';
 
 final boilerhousesStreamProvider = StreamProvider<List<BoilerHouse>>((ref) {
-  return FirebaseService.instance.boilerhousesStream();
+  return FirebaseService.instance.boilerhousesStream(user: ref.watch(currentUserProvider));
 });
 
 final boilerHouseListProvider = Provider<List<BoilerHouse>>((ref) {

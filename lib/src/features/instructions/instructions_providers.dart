@@ -2,9 +2,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/instruction.dart';
 import '../../services/firebase_service.dart';
+import '../../core/app_state.dart';
 
 final instructionsStreamProvider = StreamProvider<List<Instruction>>((ref) {
-  return FirebaseService.instance.instructionsStream();
+  return FirebaseService.instance.instructionsStream(user: ref.watch(currentUserProvider));
 });
 
 final instructionsProvider = Provider<List<Instruction>>((ref) {
